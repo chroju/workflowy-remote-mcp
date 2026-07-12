@@ -2,6 +2,20 @@
 
 A remote MCP server that wraps the [official Workflowy REST API](https://workflowy.com/api-reference/). It runs on Cloudflare Workers and can be added to claude.ai (web/mobile/desktop) as a custom connector, letting you search, browse, and edit your Workflowy outline from Claude.
 
+## Motivation
+
+Two gaps drove this project:
+
+1. **Existing Workflowy MCP servers are local (stdio) servers.** They work fine with desktop clients, but claude.ai on the web and mobile can only talk to *remote* MCP servers added as custom connectors — so if you want your outline available from a browser or your phone, a hosted server is the only option.
+2. **You can't search.** The official REST API has no search endpoint, so existing MCP servers built on it can't offer search either. For a large outline, an LLM can't do anything useful without it. This server fills the gap by maintaining a D1 mirror of the whole outline with full-text search (FTS5) and serving all reads from it.
+
+A couple of further design choices follow from there:
+
+- LLMs consume outlines best as Markdown, so `get_subtree` renders a whole subtree as a nested Markdown list in one call instead of forcing the model to walk the tree node by node
+- Running on Cloudflare Workers + D1 + KV keeps it zero-maintenance and effectively free at personal scale
+
+It is designed as a **single-user** server: authentication decides who may connect (GitHub OAuth + allowlist), while all requests operate on the one Workflowy account whose API key is stored as a Worker secret.
+
 ## Architecture
 
 - **Reads** are served from a D1 mirror with FTS5 full-text search, because the official API has no search endpoint
