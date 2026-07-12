@@ -1,0 +1,26 @@
+{
+	"name": "workflowy-mcp",
+	"version": "0.0.1",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"cf-typegen": "wrangler types",
+		"type-check": "tsc --noEmit",
+		"db:migrate:local": "wrangler d1 execute workflowy-mirror --local --file=./schema.sql",
+		"db:migrate:remote": "wrangler d1 execute workflowy-mirror --remote --file=./schema.sql"
+	},
+	"dependencies": {
+		"@cloudflare/workers-oauth-provider": "^0.8.1",
+		"agents": "^0.17.1",
+		"hono": "^4.12.27",
+		"octokit": "^5.0.5",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@types/node": "^26.1.1",
+		"typescript": "6.0.3",
+		"wrangler": "^4.105.0"
+	}
+}

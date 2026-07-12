@@ -1,0 +1,34 @@
+{
+  "name": "workflowy-mcp",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/git:1.3.8": {},
+    "ghcr.io/devcontainers/features/github-cli:1.1.0": {},
+    "ghcr.io/devcontainers/features/node:2.1.0": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0.5": {}
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.claude/projects,target=/home/chroju/.claude/projects,type=bind",
+    "source=${localEnv:HOME}/.claude/sessions,target=/home/chroju/.claude/sessions,type=bind",
+    "source=${localEnv:HOME}/.claude/.credentials-devcontainer.json,target=/home/chroju/.claude/.credentials.json,type=bind",
+    "source=${localEnv:HOME}/.claude/settings.json,target=/home/chroju/.claude/settings.json,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/history.jsonl,target=/home/chroju/.claude/history.jsonl,type=bind",
+    "source=${localEnv:HOME}/.claude.devcontainer.json,target=/home/chroju/.claude.json,type=bind",
+    "source=/tmp/ssh-agent.sock,target=/home/chroju/.ssh-agent.sock,type=bind,relabel=shared"
+  ],
+  "containerEnv": {
+    "TZ": "Asia/Tokyo"
+  },
+  "remoteEnv": {
+    "TERM": "xterm-256color",
+    "COLORTERM": "truecolor"
+  },
+  "initializeCommand": "podman machine ssh -- -R /tmp/ssh-agent.sock:\"$SSH_AUTH_SOCK\" -N & for i in $(seq 1 10); do if podman machine ssh -- test -S /tmp/ssh-agent.sock 2>/dev/null; then podman machine ssh -- chmod 777 /tmp/ssh-agent.sock; break; fi; sleep 1; done",
+  "postCreateCommand": "gh auth setup-git",
+  "runArgs": ["--env-file", ".devcontainer/.env.devcontainer", "--security-opt", "label=disable"],
+  "forwardPorts": [8787],
+  "init": true,
+  "remoteUser": "chroju"
+}

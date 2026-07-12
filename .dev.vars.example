@@ -1,0 +1,5 @@
+GITHUB_CLIENT_ID=<your github client id>
+GITHUB_CLIENT_SECRET=<your github client secret>
+COOKIE_ENCRYPTION_KEY=<your cookie encryption key>
+WORKFLOWY_API_KEY=<your workflowy api key>
+ALLOWED_GITHUB_USERS=yourusername,teammate1
