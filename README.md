@@ -1,4 +1,4 @@
-# workflowy-mcp
+# workflowy-remote-mcp
 
 A remote MCP server that wraps the [official Workflowy REST API](https://workflowy.com/api-reference/). It runs on Cloudflare Workers and can be added to claude.ai (web/mobile/desktop) as a custom connector, letting you search, browse, and edit your Workflowy outline from Claude.
 
