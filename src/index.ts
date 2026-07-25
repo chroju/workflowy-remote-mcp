@@ -2,8 +2,19 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { GitHubHandler } from "./github-handler";
+import type { RenderableNode } from "./markdown";
 import { renderSubtreeMarkdown, stripHtml } from "./markdown";
-import { getAncestorPath, getChildren, getNodeById, searchNodes, toRenderableNode } from "./queries";
+import type { ResolvedNode } from "./node-id";
+import { NodeIdentifierError, NodeNotFoundError, ROOT_SENTINEL, resolveNodeId } from "./node-id";
+import type { NodeRow } from "./queries";
+import {
+	apiNodeToRow,
+	getAncestorPath,
+	getChildren,
+	getNodeById,
+	searchNodes,
+	toRenderableNode,
+} from "./queries";
 import { ensureFresh, fullSync } from "./sync";
 import {
 	completeNodeSchema,
@@ -20,6 +31,9 @@ import { WorkflowyApiError, WorkflowyClient } from "./workflowy-client";
 import type { Props } from "./utils";
 
 function formatApiError(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } {
+	if (err instanceof NodeIdentifierError || err instanceof NodeNotFoundError) {
+		return { content: [{ type: "text", text: err.message }], isError: true };
+	}
 	if (err instanceof WorkflowyApiError) {
 		return {
 			content: [
@@ -85,6 +99,26 @@ async function upsertFtsForNode(db: D1Database, id: string, name: string, note: 
 		.run();
 }
 
+/**
+ * The node a subtree render starts from. Prefer the mirror row (it carries
+ * layout_mode and completion state), fall back to the node the resolver
+ * already fetched, and synthesise a placeholder for the root sentinel, which
+ * has no node of its own but whose children are addressable by parent_id.
+ */
+function subtreeRoot(resolved: ResolvedNode, mirroredRow: NodeRow | null): RenderableNode {
+	if (mirroredRow) return toRenderableNode(mirroredRow);
+	if (resolved.node) return toRenderableNode(apiNodeToRow(resolved.node));
+	return {
+		id: ROOT_SENTINEL,
+		parent_id: null,
+		name: "(トップレベル)",
+		note: null,
+		priority: 0,
+		layout_mode: "bullets",
+		completed_at: null,
+	};
+}
+
 export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 	server = new McpServer({
 		name: "Workflowy MCP Server",
@@ -125,21 +159,40 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_subtree",
 			{
 				description:
-					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
+					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
 				inputSchema: getSubtreeSchema,
 			},
 			async ({ node_id, max_depth }) => {
 				try {
 					await ensureFresh(db, apiKey);
-					const root = await getNodeById(db, node_id);
-					if (!root) {
+					const resolved = await resolveNodeId(db, client, node_id);
+
+					const mirroredRow = await getNodeById(db, resolved.id);
+					const root = subtreeRoot(resolved, mirroredRow);
+
+					// A node the API knows but the mirror does not was created after
+					// the last sync; recursing the mirror would silently return an
+					// empty subtree. Fall back to one level from the API and say so.
+					// The root sentinel has no row of its own but its children do.
+					if (resolved.kind !== "root" && !mirroredRow) {
+						const children = await client.listChildren(resolved.id);
+						const { markdown } = await renderSubtreeMarkdown(
+							root,
+							async () => children.map((child) => toRenderableNode(apiNodeToRow(child))),
+							{ maxDepth: 1, includeCompleted: true },
+						);
 						return {
-							content: [{ type: "text", text: `Node not found in mirror: ${node_id}` }],
-							isError: true,
+							content: [
+								{
+									type: "text",
+									text: `${markdown}\n\n_(このノードはミラー未同期のため、直下の1階層のみを公式APIから取得して表示しています。深い階層まで読むには sync_now を実行してください)_`,
+								},
+							],
 						};
 					}
+
 					const { markdown } = await renderSubtreeMarkdown(
-						toRenderableNode(root),
+						root,
 						async (parentId) => (await getChildren(db, parentId)).map(toRenderableNode),
 						{ maxDepth: max_depth, includeCompleted: true },
 					);
@@ -153,21 +206,25 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"get_node",
 			{
-				description: "単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。",
+				description:
+					"単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。公式APIへ直行するため事前の sync_now は不要で、URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。",
 				inputSchema: getNodeSchema,
 			},
 			async ({ node_id }) => {
 				try {
-					await ensureFresh(db, apiKey);
-					const node = await getNodeById(db, node_id);
-					if (!node) {
-						return {
-							content: [{ type: "text", text: `Node not found in mirror: ${node_id}` }],
-							isError: true,
-						};
-					}
-					const children = await getChildren(db, node_id);
-					const ancestorPath = await getAncestorPath(db, node_id);
+					// Deliberately no ensureFresh: the node itself comes from the API or
+					// from the mirror row the resolver already matched, and the children
+					// come from the API, so a stale mirror cannot affect the answer.
+					const resolved = await resolveNodeId(db, client, node_id);
+
+					const node =
+						resolved.kind === "root"
+							? null
+							: (resolved.node ?? (await getNodeById(db, resolved.id)));
+					const children = await client.listChildren(resolved.id);
+					const ancestorPath =
+						resolved.kind === "root" ? "" : await getAncestorPath(db, resolved.id);
+
 					return {
 						content: [
 							{

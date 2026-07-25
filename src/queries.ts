@@ -1,4 +1,6 @@
 import type { RenderableNode } from "./markdown";
+import { ROOT_SENTINEL } from "./node-id";
+import type { WorkflowyNode } from "./workflowy-client";
 
 export interface NodeRow {
 	id: string;
@@ -36,10 +38,17 @@ export async function getNodeById(db: D1Database, nodeId: string): Promise<NodeR
 }
 
 export async function getChildren(db: D1Database, parentId: string): Promise<NodeRow[]> {
-	const { results } = await db
-		.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY priority ASC")
-		.bind(parentId)
-		.all<NodeRow>();
+	// The API's "None" target and the mirror's NULL parent_id both mean
+	// "top level of the outline".
+	const { results } =
+		parentId === ROOT_SENTINEL
+			? await db
+					.prepare("SELECT * FROM nodes WHERE parent_id IS NULL ORDER BY priority ASC")
+					.all<NodeRow>()
+			: await db
+					.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY priority ASC")
+					.bind(parentId)
+					.all<NodeRow>();
 	return results;
 }
 
@@ -120,6 +129,24 @@ export async function searchNodes(
 		});
 	}
 	return hits;
+}
+
+/**
+ * Projects an API node onto the mirror's row shape so callers can treat
+ * API-sourced and mirror-sourced nodes interchangeably.
+ */
+export function apiNodeToRow(node: WorkflowyNode): NodeRow {
+	return {
+		id: node.id,
+		parent_id: node.parent_id,
+		name: node.name ?? "",
+		note: node.note ?? null,
+		priority: node.priority ?? 0,
+		layout_mode: node.data?.layoutMode ?? "bullets",
+		created_at: node.createdAt ?? null,
+		modified_at: node.modifiedAt ?? null,
+		completed_at: node.completedAt ?? null,
+	};
 }
 
 export function toRenderableNode(row: NodeRow): RenderableNode {
