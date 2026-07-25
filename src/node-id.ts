@@ -91,6 +91,21 @@ export function classifyNodeIdentifier(input: string): NodeIdentifier {
 	return { kind: "shortcut", value };
 }
 
+/**
+ * Prepares an identifier for a write endpoint. The API accepts the whole
+ * vocabulary on writes, so nothing needs resolving upfront -- but URLs are
+ * only documented for List/Create/Move, so they are reduced to a short id
+ * here. Rejecting malformed input locally also keeps a doomed request from
+ * reaching the API at all.
+ */
+export function normalizeForApi(input: string): string {
+	const identifier = classifyNodeIdentifier(input);
+	if (identifier.kind === "invalid") {
+		throw new NodeIdentifierError(input.trim());
+	}
+	return identifier.value;
+}
+
 /** The subset of WorkflowyClient the resolver needs, kept narrow for testing. */
 export interface NodeFetcher {
 	getNode(nodeId: string): Promise<WorkflowyNode>;

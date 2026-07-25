@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { classifyNodeIdentifier, normalizeNodeIdentifier } from "../src/node-id";
+import {
+	NodeIdentifierError,
+	classifyNodeIdentifier,
+	normalizeForApi,
+	normalizeNodeIdentifier,
+} from "../src/node-id";
 
 describe("normalizeNodeIdentifier", () => {
 	it("trims surrounding whitespace", () => {
@@ -90,5 +95,23 @@ describe("classifyNodeIdentifier", () => {
 			kind: "short_id",
 			value: "f06c631642eb",
 		});
+	});
+});
+
+describe("normalizeForApi", () => {
+	it("reduces a URL to the short id the API accepts", () => {
+		expect(normalizeForApi("https://workflowy.com/#/f06c631642eb")).toBe("f06c631642eb");
+	});
+
+	it("passes the API's own vocabulary through untouched", () => {
+		expect(normalizeForApi("today")).toBe("today");
+		expect(normalizeForApi("inbox")).toBe("inbox");
+		expect(normalizeForApi("None")).toBe("None");
+		expect(normalizeForApi("2026-07-25")).toBe("2026-07-25");
+		expect(normalizeForApi("rd")).toBe("rd");
+	});
+
+	it("rejects input that cannot be an identifier before any request is made", () => {
+		expect(() => normalizeForApi("  ")).toThrow(NodeIdentifierError);
 	});
 });

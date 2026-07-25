@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { GitHubHandler } from "./github-handler";
 import { stripHtml } from "./markdown";
-import { NodeIdentifierError, NodeNotFoundError } from "./node-id";
+import { NodeIdentifierError, NodeNotFoundError, normalizeForApi } from "./node-id";
 import { searchNodes } from "./queries";
 import { ensureFresh, fullSync } from "./sync";
 import { getNode, getSubtree } from "./tools";
@@ -172,12 +172,17 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"create_node",
 			{
 				description:
-					'新しいノードを作成する。parent_id には UUID のほか "inbox" / "today" / "tomorrow" / "YYYY-MM-DD" / "None"(ルート) が使える。公式APIへ直行し、成功したら D1 ミラーにも反映する。',
+					"新しいノードを作成する。parent_id には UUID・URL・12桁ショートID・カレンダーターゲット・\"inbox\"・\"None\"(ルート) などが使える。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
 				inputSchema: createNodeSchema,
 			},
 			async ({ parent_id, name, note, position }) => {
 				try {
-					const node = await client.createNode({ parent_id, name, note, position });
+					const node = await client.createNode({
+						parent_id: normalizeForApi(parent_id),
+						name,
+						note,
+						position,
+					});
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -195,7 +200,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, name, note }) => {
 				try {
-					const node = await client.updateNode(node_id, { name, note });
+					const node = await client.updateNode(normalizeForApi(node_id), { name, note });
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -213,7 +218,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.completeNode(node_id);
+					const node = await client.completeNode(normalizeForApi(node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -230,7 +235,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.uncompleteNode(node_id);
+					const node = await client.uncompleteNode(normalizeForApi(node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -247,7 +252,10 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, parent_id, position }) => {
 				try {
-					const node = await client.moveNode(node_id, { parent_id, position });
+					const node = await client.moveNode(normalizeForApi(node_id), {
+						parent_id: normalizeForApi(parent_id),
+						position,
+					});
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
