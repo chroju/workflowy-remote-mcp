@@ -2,20 +2,11 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { GitHubHandler } from "./github-handler";
-import type { RenderableNode } from "./markdown";
-import { renderSubtreeMarkdown, stripHtml } from "./markdown";
-import type { ResolvedNode } from "./node-id";
-import { NodeIdentifierError, NodeNotFoundError, ROOT_SENTINEL, resolveNodeId } from "./node-id";
-import type { NodeRow } from "./queries";
-import {
-	apiNodeToRow,
-	getAncestorPath,
-	getChildren,
-	getNodeById,
-	searchNodes,
-	toRenderableNode,
-} from "./queries";
+import { stripHtml } from "./markdown";
+import { NodeIdentifierError, NodeNotFoundError } from "./node-id";
+import { searchNodes } from "./queries";
 import { ensureFresh, fullSync } from "./sync";
+import { getNode, getSubtree } from "./tools";
 import {
 	completeNodeSchema,
 	createNodeSchema,
@@ -99,26 +90,6 @@ async function upsertFtsForNode(db: D1Database, id: string, name: string, note: 
 		.run();
 }
 
-/**
- * The node a subtree render starts from. Prefer the mirror row (it carries
- * layout_mode and completion state), fall back to the node the resolver
- * already fetched, and synthesise a placeholder for the root sentinel, which
- * has no node of its own but whose children are addressable by parent_id.
- */
-function subtreeRoot(resolved: ResolvedNode, mirroredRow: NodeRow | null): RenderableNode {
-	if (mirroredRow) return toRenderableNode(mirroredRow);
-	if (resolved.node) return toRenderableNode(apiNodeToRow(resolved.node));
-	return {
-		id: ROOT_SENTINEL,
-		parent_id: null,
-		name: "(トップレベル)",
-		note: null,
-		priority: 0,
-		layout_mode: "bullets",
-		completed_at: null,
-	};
-}
-
 export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 	server = new McpServer({
 		name: "Workflowy MCP Server",
@@ -165,37 +136,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			async ({ node_id, max_depth }) => {
 				try {
 					await ensureFresh(db, apiKey);
-					const resolved = await resolveNodeId(db, client, node_id);
-
-					const mirroredRow = await getNodeById(db, resolved.id);
-					const root = subtreeRoot(resolved, mirroredRow);
-
-					// A node the API knows but the mirror does not was created after
-					// the last sync; recursing the mirror would silently return an
-					// empty subtree. Fall back to one level from the API and say so.
-					// The root sentinel has no row of its own but its children do.
-					if (resolved.kind !== "root" && !mirroredRow) {
-						const children = await client.listChildren(resolved.id);
-						const { markdown } = await renderSubtreeMarkdown(
-							root,
-							async () => children.map((child) => toRenderableNode(apiNodeToRow(child))),
-							{ maxDepth: 1, includeCompleted: true },
-						);
-						return {
-							content: [
-								{
-									type: "text",
-									text: `${markdown}\n\n_(このノードはミラー未同期のため、直下の1階層のみを公式APIから取得して表示しています。深い階層まで読むには sync_now を実行してください)_`,
-								},
-							],
-						};
-					}
-
-					const { markdown } = await renderSubtreeMarkdown(
-						root,
-						async (parentId) => (await getChildren(db, parentId)).map(toRenderableNode),
-						{ maxDepth: max_depth, includeCompleted: true },
-					);
+					const markdown = await getSubtree(db, client, node_id, max_depth);
 					return { content: [{ type: "text", text: markdown }] };
 				} catch (err) {
 					return formatApiError(err);
@@ -215,23 +156,9 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 					// Deliberately no ensureFresh: the node itself comes from the API or
 					// from the mirror row the resolver already matched, and the children
 					// come from the API, so a stale mirror cannot affect the answer.
-					const resolved = await resolveNodeId(db, client, node_id);
-
-					const node =
-						resolved.kind === "root"
-							? null
-							: (resolved.node ?? (await getNodeById(db, resolved.id)));
-					const children = await client.listChildren(resolved.id);
-					const ancestorPath =
-						resolved.kind === "root" ? "" : await getAncestorPath(db, resolved.id);
-
+					const result = await getNode(db, client, node_id);
 					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({ node, ancestor_path: ancestorPath, children }, null, 2),
-							},
-						],
+						content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 					};
 				} catch (err) {
 					return formatApiError(err);
