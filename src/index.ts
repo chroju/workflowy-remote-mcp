@@ -2,9 +2,11 @@ import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { GitHubHandler } from "./github-handler";
-import { renderSubtreeMarkdown, stripHtml } from "./markdown";
-import { getAncestorPath, getChildren, getNodeById, searchNodes, toRenderableNode } from "./queries";
+import { stripHtml } from "./markdown";
+import { NodeIdentifierError, NodeNotFoundError, normalizeForApi } from "./node-id";
+import { searchNodes } from "./queries";
 import { ensureFresh, fullSync } from "./sync";
+import { getNode, getSubtree } from "./tools";
 import {
 	completeNodeSchema,
 	createNodeSchema,
@@ -20,6 +22,9 @@ import { WorkflowyApiError, WorkflowyClient } from "./workflowy-client";
 import type { Props } from "./utils";
 
 function formatApiError(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } {
+	if (err instanceof NodeIdentifierError || err instanceof NodeNotFoundError) {
+		return { content: [{ type: "text", text: err.message }], isError: true };
+	}
 	if (err instanceof WorkflowyApiError) {
 		return {
 			content: [
@@ -125,24 +130,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_subtree",
 			{
 				description:
-					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
+					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
 				inputSchema: getSubtreeSchema,
 			},
 			async ({ node_id, max_depth }) => {
 				try {
 					await ensureFresh(db, apiKey);
-					const root = await getNodeById(db, node_id);
-					if (!root) {
-						return {
-							content: [{ type: "text", text: `Node not found in mirror: ${node_id}` }],
-							isError: true,
-						};
-					}
-					const { markdown } = await renderSubtreeMarkdown(
-						toRenderableNode(root),
-						async (parentId) => (await getChildren(db, parentId)).map(toRenderableNode),
-						{ maxDepth: max_depth, includeCompleted: true },
-					);
+					const markdown = await getSubtree(db, client, node_id, max_depth);
 					return { content: [{ type: "text", text: markdown }] };
 				} catch (err) {
 					return formatApiError(err);
@@ -153,28 +147,18 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"get_node",
 			{
-				description: "単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。",
+				description:
+					"単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。公式APIへ直行するため事前の sync_now は不要で、URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。",
 				inputSchema: getNodeSchema,
 			},
 			async ({ node_id }) => {
 				try {
-					await ensureFresh(db, apiKey);
-					const node = await getNodeById(db, node_id);
-					if (!node) {
-						return {
-							content: [{ type: "text", text: `Node not found in mirror: ${node_id}` }],
-							isError: true,
-						};
-					}
-					const children = await getChildren(db, node_id);
-					const ancestorPath = await getAncestorPath(db, node_id);
+					// Deliberately no ensureFresh: the node itself comes from the API or
+					// from the mirror row the resolver already matched, and the children
+					// come from the API, so a stale mirror cannot affect the answer.
+					const result = await getNode(db, client, node_id);
 					return {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({ node, ancestor_path: ancestorPath, children }, null, 2),
-							},
-						],
+						content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 					};
 				} catch (err) {
 					return formatApiError(err);
@@ -188,12 +172,17 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"create_node",
 			{
 				description:
-					'新しいノードを作成する。parent_id には UUID のほか "inbox" / "today" / "tomorrow" / "YYYY-MM-DD" / "None"(ルート) が使える。公式APIへ直行し、成功したら D1 ミラーにも反映する。',
+					"新しいノードを作成する。parent_id には UUID・URL・12桁ショートID・カレンダーターゲット・\"inbox\"・\"None\"(ルート) などが使える。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
 				inputSchema: createNodeSchema,
 			},
 			async ({ parent_id, name, note, position }) => {
 				try {
-					const node = await client.createNode({ parent_id, name, note, position });
+					const node = await client.createNode({
+						parent_id: normalizeForApi(parent_id),
+						name,
+						note,
+						position,
+					});
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -211,7 +200,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, name, note }) => {
 				try {
-					const node = await client.updateNode(node_id, { name, note });
+					const node = await client.updateNode(normalizeForApi(node_id), { name, note });
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -229,7 +218,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.completeNode(node_id);
+					const node = await client.completeNode(normalizeForApi(node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -246,7 +235,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.uncompleteNode(node_id);
+					const node = await client.uncompleteNode(normalizeForApi(node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -263,7 +252,10 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, parent_id, position }) => {
 				try {
-					const node = await client.moveNode(node_id, { parent_id, position });
+					const node = await client.moveNode(normalizeForApi(node_id), {
+						parent_id: normalizeForApi(parent_id),
+						position,
+					});
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {

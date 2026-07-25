@@ -38,13 +38,33 @@ claude.ai ──OAuth 2.1──> Workers (OAuthProvider + McpAgent)
 | `search_nodes` | read | Full-text search over name/note, returns ancestor paths |
 | `get_subtree` | read | Renders a node's descendants as nested Markdown (up to 500 nodes) |
 | `get_node` | read | Single node detail plus immediate children |
-| `create_node` | write | Create a node; `parent_id` accepts special targets like "inbox" / "today" |
+| `create_node` | write | Create a node |
 | `update_node` | write | Update name / note |
 | `complete_node` / `uncomplete_node` | write | Complete / uncomplete |
 | `move_node` | write | Move to another parent / position |
 | `sync_now` | ops | Force a full mirror refresh |
 
 **Delete is intentionally not exposed** (the official DELETE endpoint is irreversible).
+
+### Node identifiers
+
+Every `node_id` / `parent_id` accepts the same vocabulary, resolved in
+`src/node-id.ts`:
+
+| Form | Example |
+|---|---|
+| Full UUID | `6e9c5b0a-1234-4abc-8def-f06c631642eb` |
+| 12-digit short id | `f06c631642eb` |
+| Workflowy URL | `https://workflowy.com/#/f06c631642eb` |
+| Calendar target | `today`, `tomorrow`, `next_week`, `calendar`, `2026`, `2026-07`, `2026-07-25` |
+| Inbox | `inbox` |
+| Top level of the outline | `None` |
+| User-defined shortcut key | `rd` |
+
+Everything except a UUID already present in the mirror is resolved by the
+official API, which is the authority on this vocabulary. Calendar targets
+resolve existing nodes only — reads never create a date node. A UUID the
+mirror already holds short-circuits with no HTTP call at all.
 
 ## Setup
 
@@ -126,6 +146,15 @@ TypeScript types for bindings are generated from your local `wrangler.jsonc`:
 npm run cf-typegen
 ```
 
+### Tests
+
+```bash
+npm test          # vitest, running inside workerd
+npm run type-check
+```
+
+Tests run under `@cloudflare/vitest-pool-workers`, so D1 behaves as it does in production (FTS5, the trigram tokenizer, batch semantics). The pool is configured with a bare D1 binding rather than `wrangler.jsonc`, whose Durable Objects, KV and OAuth provider the unit tests do not exercise. `test/` has its own `tsconfig.json` because it needs the `cloudflare:test` types.
+
 ## Design notes
 
 ### Rate limits
@@ -134,7 +163,15 @@ npm run cf-typegen
 
 ### Lazy sync threshold
 
-Read tools (`search_nodes` / `get_subtree` / `get_node`) check `last_synced_at` before running and perform an inline full sync if it is older than **15 minutes**. Within that window they serve straight from D1, so changes made in Workflowy itself may not be visible yet. Call `sync_now` first if you need the latest state.
+`search_nodes` and `get_subtree` check `last_synced_at` before running and perform an inline full sync if it is older than **15 minutes**. Within that window they serve straight from D1, so changes made in Workflowy itself may not be visible yet. Call `sync_now` first if you need the latest state.
+
+`get_node` does not sync at all: the node comes from the API (or from the mirror row its UUID already matched) and its children always come from `GET /nodes?parent_id=`, so a stale mirror cannot affect the answer.
+
+### Reads: which layer answers what
+
+`get_node` is the interactive entry point, so it favours freshness and a low call count: one Retrieve to resolve the identifier, one List for the children.
+
+`get_subtree` resolves only its starting point through the API and then recurses the **mirror**. List returns a single level, so walking a depth-N subtree through the API would cost one HTTP call per node; the mirror recursion is the right shape for that read. When the starting point resolves but has no mirror row — a node created since the last sync — the tool falls back to one level from List and says so in its output rather than returning a silently empty subtree. It never triggers `nodes-export` to paper over the gap.
 
 ### Full-text search
 

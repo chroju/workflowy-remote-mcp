@@ -38,5 +38,9 @@
 
 		/* Skip type checking all .d.ts files. */
 		"skipLibCheck": true
-	}
+	},
+
+	/* test/ has its own tsconfig: it needs the cloudflare:test types, which
+	   are only meaningful inside the Workers test pool. */
+	"exclude": ["test", "node_modules"]
 }
