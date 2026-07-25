@@ -35,11 +35,13 @@ export async function getNodeById(db: D1Database, nodeId: string): Promise<NodeR
 	return row ?? null;
 }
 
-export async function getChildren(db: D1Database, parentId: string): Promise<NodeRow[]> {
-	const { results } = await db
-		.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY priority ASC")
-		.bind(parentId)
-		.all<NodeRow>();
+/** Passing null lists the top level of the outline (the `None` target). */
+export async function getChildren(db: D1Database, parentId: string | null): Promise<NodeRow[]> {
+	const stmt =
+		parentId === null
+			? db.prepare("SELECT * FROM nodes WHERE parent_id IS NULL ORDER BY priority ASC")
+			: db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY priority ASC").bind(parentId);
+	const { results } = await stmt.all<NodeRow>();
 	return results;
 }
 

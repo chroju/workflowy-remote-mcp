@@ -7,6 +7,7 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types",
+		"test": "vitest run",
 		"type-check": "tsc --noEmit",
 		"db:migrate:local": "wrangler d1 execute workflowy-mirror --local --file=./schema.sql",
 		"db:migrate:remote": "wrangler d1 execute workflowy-mirror --remote --file=./schema.sql"
@@ -21,6 +22,7 @@
 	"devDependencies": {
 		"@types/node": "^26.1.1",
 		"typescript": "6.0.3",
+		"vitest": "^4.1.10",
 		"wrangler": "^4.105.0"
 	}
 }

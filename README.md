@@ -18,17 +18,20 @@ It is designed as a **single-user** server: authentication decides who may conne
 
 ## Architecture
 
-- **Reads** are served from a D1 mirror with FTS5 full-text search, because the official API has no search endpoint
+- **Search and subtree reads** are served from a D1 mirror with FTS5 full-text search, because the official API has no search endpoint
+- **Single-node reads** (`get_node`) go straight to the official API, so they are always current and need no prior sync
 - **Writes** go straight to the official API, then are optimistically reflected into the D1 mirror
-- **Mirror freshness** is maintained by lazy sync on read-tool calls (15-minute threshold) plus a twice-daily cron
+- **Node identifiers** are resolved through one shared layer (`src/node-id.ts`) that accepts everything the official API accepts — see [Node identifiers](#node-identifiers)
+- **Mirror freshness** is maintained by lazy sync on mirror-backed read tools (15-minute threshold) plus a twice-daily cron
 - **Auth** is OAuth 2.1 via [`workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider), with GitHub as the upstream IdP and an allowlist (`ALLOWED_GITHUB_USERS`) gating authorization
 - The Workflowy API key lives in a Worker secret and is never exposed to clients
 
 ```
 claude.ai ──OAuth 2.1──> Workers (OAuthProvider + McpAgent)
                               │
-                              ├── reads:  D1 mirror (FTS5 trigram)
-                              └── writes: Workflowy API ──on success──> D1 upsert
+                              ├── search / subtree: D1 mirror (FTS5 trigram)
+                              ├── get_node:         Workflowy API
+                              └── writes:           Workflowy API ──on success──> D1 upsert
 ```
 
 ## MCP tools
@@ -37,14 +40,32 @@ claude.ai ──OAuth 2.1──> Workers (OAuthProvider + McpAgent)
 |---|---|---|
 | `search_nodes` | read | Full-text search over name/note, returns ancestor paths |
 | `get_subtree` | read | Renders a node's descendants as nested Markdown (up to 500 nodes) |
-| `get_node` | read | Single node detail plus immediate children |
-| `create_node` | write | Create a node; `parent_id` accepts special targets like "inbox" / "today" |
+| `get_node` | read | Single node detail plus immediate children, straight from the API |
+| `create_node` | write | Create a node under any accepted identifier |
 | `update_node` | write | Update name / note |
 | `complete_node` / `uncomplete_node` | write | Complete / uncomplete |
 | `move_node` | write | Move to another parent / position |
 | `sync_now` | ops | Force a full mirror refresh |
 
 **Delete is intentionally not exposed** (the official DELETE endpoint is irreversible).
+
+## Node identifiers
+
+Every tool that takes a `node_id` or `parent_id` accepts the same vocabulary, resolved by `src/node-id.ts`:
+
+| Form | Example | Resolution |
+|---|---|---|
+| Full UUID | `f06c6316-…-42eb` | Local, no API call |
+| Outline URL | `https://workflowy.com/#/db48cc88ed2c` | Normalised locally to the short id, then one API retrieve |
+| 12-char short id | `db48cc88ed2c` | One API retrieve |
+| Calendar target | `today`, `tomorrow`, `next_week`, `2026`, `2026-07`, `2026-07-25` | One API retrieve |
+| Top level | `None` | Listed, never retrieved (it is not a node) |
+| Inbox | `inbox` | Retrieved if supported, otherwise listed |
+| Shortcut key | `rd` | Retrieved, falling back to a `GET /targets` lookup |
+
+This matters most for the short id, which is the only identifier a Workflowy URL exposes. Before this layer existed, pasting a URL meant hunting for the node through search, and date nodes — whose `name` is a bare `<time>` element — could not be found by search at all.
+
+Calendar targets resolve to existing nodes only; they never create one, so reads are safe. Two failure modes are reported distinctly: input that cannot be an identifier at all, and an identifier that names nothing reachable.
 
 ## Setup
 
@@ -134,7 +155,15 @@ npm run cf-typegen
 
 ### Lazy sync threshold
 
-Read tools (`search_nodes` / `get_subtree` / `get_node`) check `last_synced_at` before running and perform an inline full sync if it is older than **15 minutes**. Within that window they serve straight from D1, so changes made in Workflowy itself may not be visible yet. Call `sync_now` first if you need the latest state.
+The mirror-backed read tools (`search_nodes` / `get_subtree`) check `last_synced_at` before running and perform an inline full sync if it is older than **15 minutes**. Within that window they serve straight from D1, so changes made in Workflowy itself may not be visible yet. Call `sync_now` first if you need a deep read to reflect the latest state.
+
+`get_node` does not participate in this: it reads the API directly and is always current.
+
+### Reading a node the mirror has not seen yet
+
+`get_subtree` resolves its starting point against the API but walks the subtree in D1, because the List endpoint returns one level at a time and an API-side walk would cost one request per node. When resolution succeeds but the node is not in the mirror — typically a node created since the last sync — it returns the node's immediate children from the List API and says so in the response.
+
+That fallback deliberately does **not** trigger a sync: a full refresh means calling `GET /nodes-export`, which is rate-limited to one request per minute, so a miss would be an expensive way to answer a cheap question.
 
 ### Full-text search
 
