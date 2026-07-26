@@ -5,8 +5,8 @@ import { GitHubHandler } from "./github-handler";
 import { stripHtml } from "./markdown";
 import { NodeIdentifierError, NodeNotFoundError, normalizeForApi } from "./node-id";
 import { searchNodes } from "./queries";
-import { ensureFresh, fullSync } from "./sync";
-import { getNode, getSubtree } from "./tools";
+import { fullSync } from "./sync";
+import { getNode, getSubtree, resolveForWrite } from "./tools";
 import {
 	completeNodeSchema,
 	createNodeSchema,
@@ -107,12 +107,14 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"search_nodes",
 			{
 				description:
-					"Workflowy のアウトライン全体を全文検索する。D1 ミラーから検索し、ヒットしたノードの id・name・note抜粋(先頭200字)・祖先パス(ルートからの name を \" > \" 連結)・最終更新日時を返す。日本語・英語どちらのクエリにも対応。",
+					"Workflowy のアウトライン全体を全文検索する。D1 ミラーから検索し、ヒットしたノードの id・name・note抜粋(先頭200字)・祖先パス(ルートからの name を \" > \" 連結)・最終更新日時を返す。日本語・英語どちらのクエリにも対応。ミラーが古い場合はバックグラウンドで同期を開始するが、その完了は待たずに現在のミラーの内容を返すため、直前の編集が反映されていないことがある。確実に最新を見るには sync_now を実行してから再検索する。",
 				inputSchema: searchNodesSchema,
 			},
 			async ({ query, limit, include_completed }) => {
 				try {
-					await ensureFresh(db, apiKey);
+					// No inline sync: the mirror is refreshed by cron and sync_now.
+					// Syncing here would make the search wait minutes on a large
+					// outline, past the client's timeout, to no benefit.
 					const hits = await searchNodes(db, query, {
 						limit,
 						includeCompleted: include_completed,
@@ -130,12 +132,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_subtree",
 			{
 				description:
-					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
+					"指定ノード配下を Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。max_depth=1 の場合は公式APIから直下1階層のみを取得するため常に最新。max_depth>=2 の場合は D1 ミラーを再帰的に辿るため古いことがあり、末尾にミラーの最終同期時刻を付記する(ミラーが古ければバックグラウンドで同期を開始するが、完了は待たない)。todo はチェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
 				inputSchema: getSubtreeSchema,
 			},
 			async ({ node_id, max_depth }) => {
 				try {
-					await ensureFresh(db, apiKey);
+					// No inline sync here either; a deep walk reports the mirror's
+					// last sync time so the caller can run sync_now if it matters.
 					const markdown = await getSubtree(db, client, node_id, max_depth);
 					return { content: [{ type: "text", text: markdown }] };
 				} catch (err) {
@@ -148,14 +151,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_node",
 			{
 				description:
-					"単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。公式APIへ直行するため事前の sync_now は不要で、URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。",
+					"単一ノードの詳細情報(id, parent_id, name, note, priority, layout_mode, created_at, modified_at, completed_at)と直下の子ノード一覧を返す。ノード・子ノードとも公式APIへ直行するため常に最新で、事前の sync_now は不要。URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。祖先パスが必要な場合は search_nodes を使う。node_id に \"None\"(トップレベル)を渡した場合、node は null になり、children にトップレベルのノードが入る。",
 				inputSchema: getNodeSchema,
 			},
 			async ({ node_id }) => {
 				try {
-					// Deliberately no ensureFresh: the node itself comes from the API or
-					// from the mirror row the resolver already matched, and the children
-					// come from the API, so a stale mirror cannot affect the answer.
+					// Nothing here reads the mirror: both the node and its children
+					// come from the API, so its staleness cannot affect the answer.
 					const result = await getNode(db, client, node_id);
 					return {
 						content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -200,7 +202,10 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, name, note }) => {
 				try {
-					const node = await client.updateNode(normalizeForApi(node_id), { name, note });
+					const node = await client.updateNode(await resolveForWrite(db, client, node_id), {
+							name,
+						note,
+					});
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -218,7 +223,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.completeNode(normalizeForApi(node_id));
+					const node = await client.completeNode(await resolveForWrite(db, client, node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -235,7 +240,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.uncompleteNode(normalizeForApi(node_id));
+					const node = await client.uncompleteNode(await resolveForWrite(db, client, node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -252,7 +257,9 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, parent_id, position }) => {
 				try {
-					const node = await client.moveNode(normalizeForApi(node_id), {
+					// node_id lands in the URL path (narrow vocabulary); parent_id is a
+					// body field and accepts shortcut keys, "None" and "inbox" as-is.
+					const node = await client.moveNode(await resolveForWrite(db, client, node_id), {
 						parent_id: normalizeForApi(parent_id),
 						position,
 					});
@@ -270,7 +277,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"sync_now",
 			{
 				description:
-					"D1 ミラーを Workflowy の現在の状態に強制的に全量同期する(fullSync)。直近60秒以内に同期を試みていた場合はスキップされる。最終同期時刻と同期件数を返す。",
+					"D1 ミラーを Workflowy の現在の状態に全量同期する(fullSync)。直近60秒以内に同期を試みていた場合、および別の同期が実行中の場合はスキップされる。最終同期時刻・同期件数・削除件数を返す。同期中もミラーは読み取り可能な状態を保つ。",
 				inputSchema: syncNowSchema,
 			},
 			async () => {

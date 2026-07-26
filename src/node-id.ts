@@ -10,9 +10,12 @@ import { WorkflowyApiError, type WorkflowyNode } from "./workflowy-client";
  * Rather than reimplement that vocabulary against the mirror, everything the
  * mirror cannot answer by itself is delegated to the API.
  *
- * Note the vocabulary is asymmetric upstream: URLs, shortcut keys and "None"
- * are documented for List/Create/Move but not for Retrieve, so URLs are
- * normalised to a short id here before a single-node fetch.
+ * Note the vocabulary is asymmetric upstream. List/Create/Move accept the
+ * whole table; Retrieve -- and so every endpoint taking the identifier as a
+ * `:id` path segment -- accepts only full UUIDs, short ids and calendar
+ * targets. URLs are therefore reduced to a short id here, and the forms the
+ * path cannot take at all (shortcut keys, "None", "inbox") are resolved to a
+ * UUID through the API first. See needsResolutionForPath below.
  */
 
 /** The root of the outline. It has no UUID; children are listed via parent_id=None. */
@@ -92,11 +95,12 @@ export function classifyNodeIdentifier(input: string): NodeIdentifier {
 }
 
 /**
- * Prepares an identifier for a write endpoint. The API accepts the whole
- * vocabulary on writes, so nothing needs resolving upfront -- but URLs are
- * only documented for List/Create/Move, so they are reduced to a short id
- * here. Rejecting malformed input locally also keeps a doomed request from
- * reaching the API at all.
+ * Prepares an identifier for a `parent_id` argument (Create / Move / List).
+ *
+ * These endpoints accept the full vocabulary -- full UUID, short id, URL,
+ * shortcut key, "None", "inbox" and every calendar target -- so nothing is
+ * rejected beyond structurally impossible input. URLs are still reduced to a
+ * short id so the mirror and the API agree on one canonical form.
  */
 export function normalizeForApi(input: string): string {
 	const identifier = classifyNodeIdentifier(input);
@@ -104,6 +108,20 @@ export function normalizeForApi(input: string): string {
 		throw new NodeIdentifierError(input.trim());
 	}
 	return identifier.value;
+}
+
+/**
+ * Prepares an identifier addressing a single existing node (the `:id` path
+ * segment of Retrieve, Update, Move, Complete and Uncomplete).
+ *
+ * That path segment accepts a narrower vocabulary than `parent_id` does: full
+ * UUID, 12-digit short id, and calendar targets only. URLs, shortcut keys,
+ * "None" and "inbox" are not addressable this way, so they are resolved
+ * through the API first rather than pasted into the path.
+ */
+export function needsResolutionForPath(input: string): boolean {
+	const kind = classifyNodeIdentifier(input).kind;
+	return kind === "shortcut" || kind === "root";
 }
 
 /** The subset of WorkflowyClient the resolver needs, kept narrow for testing. */
@@ -119,17 +137,29 @@ export interface ResolvedNode {
 	node: WorkflowyNode | null;
 }
 
+export interface ResolveOptions {
+	/**
+	 * Allow a UUID that is already in the mirror to resolve without an HTTP
+	 * call. Only safe for callers that read from the mirror anyway (the deep
+	 * get_subtree walk); callers that need the node body itself must leave
+	 * this off, or they trade one saved call for a second fetch later.
+	 */
+	useMirrorShortcut?: boolean;
+}
+
 /**
  * Resolves any accepted identifier to a full UUID.
  *
- * A UUID already present in the mirror short-circuits with no HTTP call. Every
- * other form goes to the API, and the fetched node is returned alongside the id
- * so callers do not have to fetch the same node twice.
+ * Everything goes to the API, and the fetched node is returned alongside the id
+ * so callers do not have to fetch the same node twice. With
+ * `useMirrorShortcut`, a UUID already present in the mirror short-circuits
+ * with no HTTP call and no node body.
  */
 export async function resolveNodeId(
 	db: D1Database,
 	client: NodeFetcher,
 	input: string,
+	options: ResolveOptions = {},
 ): Promise<ResolvedNode> {
 	const identifier = classifyNodeIdentifier(input);
 
@@ -139,7 +169,7 @@ export async function resolveNodeId(
 	if (identifier.kind === "root") {
 		return { id: ROOT_SENTINEL, kind: "root", node: null };
 	}
-	if (identifier.kind === "uuid") {
+	if (identifier.kind === "uuid" && options.useMirrorShortcut) {
 		const row = await db
 			.prepare("SELECT id FROM nodes WHERE id = ?")
 			.bind(identifier.value)
