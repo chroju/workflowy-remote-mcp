@@ -211,6 +211,12 @@ npm test          # vitest, running inside workerd
 npm run type-check
 ```
 
+Files named `*-bench.test.ts` are throughput probes rather than assertions — they write ~25k rows and take minutes — so they are excluded by default. Run one deliberately:
+
+```bash
+BENCH=1 npx vitest run test/sync-bench.test.ts --disable-console-intercept
+```
+
 Tests run under `@cloudflare/vitest-pool-workers`, so D1 behaves as it does in production (FTS5, the trigram tokenizer, batch semantics). The pool is configured with a bare D1 binding rather than `wrangler.jsonc`, whose Durable Objects, KV and OAuth provider the unit tests do not exercise. `test/` has its own `tsconfig.json` because it needs the `cloudflare:test` types.
 
 ## Design notes
@@ -221,7 +227,9 @@ Tests run under `@cloudflare/vitest-pool-workers`, so D1 behaves as it does in p
 
 ### No sync on reads
 
-Read tools never sync. They used to: `search_nodes` and `get_subtree` ran an inline full sync when `last_synced_at` was older than 15 minutes. On a real outline (~25k nodes) that sync takes minutes — longer than an MCP client will wait — so the read timed out while the sync completed unseen. Deferring it to `waitUntil` would have fixed the timeout but left reads spending the 1 req/min export budget at moments the caller cannot predict.
+Read tools never sync. They used to: `search_nodes` and `get_subtree` ran an inline full sync when `last_synced_at` was older than 15 minutes. On a real outline (~25k nodes) that took minutes — longer than an MCP client waits — so the read timed out while the sync completed unseen.
+
+Sync has since been made substantially faster (see [Mirror consistency during sync](#mirror-consistency-during-sync)), but a full sync against production still takes ~29s at 24.8k nodes — well beyond what a read should block on. Reads therefore still never sync. Even were it instant, a sync is gated on `GET /nodes-export`, whose latency is not ours to control and whose 1 req/min budget reads would be spending on the caller's behalf, at moments nothing in the response explains.
 
 The mirror is refreshed by the twice-daily cron and by `sync_now`. Reads answer from whatever it currently holds, and `get_subtree` states its last sync time so a caller who needs certainty can run `sync_now` first.
 
@@ -241,9 +249,43 @@ The FTS table stores plain text with inline HTML tags stripped from name/note.
 
 ### Mirror consistency during sync
 
-A full sync must never leave the mirror unreadable, because D1 gives it no transaction to hide behind: the export is written over several hundred separate `batch()` calls, and reads land between them.
+A full sync must never leave the mirror unreadable, because D1 gives it no transaction to hide behind: the export is written over many separate `batch()` calls spanning ~29s, and reads land between them.
 
-So `fullSync` does **not** wipe the tables first. Rows are upserted in place and only ids missing from the export are deleted afterwards, which keeps every row continuously visible and means a node is never absent from the mirror while it still exists upstream.
+So `fullSync` does **not** wipe `nodes`. Rows are upserted in place and only ids missing from the export are deleted afterwards, which keeps every row continuously visible and means a node is never absent from the mirror while it still exists upstream.
+
+`nodes_fts` is the exception: it *is* rebuilt wholesale, because it holds no data of its own — only an index derived from `nodes`. It is contentless fts5 whose `id` column is `UNINDEXED`, so `DELETE ... WHERE id = ?` is a full table scan; at 24.8k nodes those per-id deletes measured **~35s locally**, against ~0.5s for the inserts and ~0.1s for a single whole-table wipe — and locally is the *favourable* case for them, since each one avoids a network round-trip. Rebuilding costs `search_nodes` its hits for the few hundred milliseconds it takes, while `get_node` and `get_subtree` never touch the index and are unaffected.
+
+### Batch width: measure it deployed, not locally
+
+Batch width must be tuned against the deployed Worker. Local miniflare will actively mislead you here: its D1 is in-process, so there is no round-trip to amortise and every width from 100 to 5000 lands within 3% of the rest. Deployed, each `batch()` is a network call and the write phase is ~96% of sync time.
+
+Measured against production at 24.8k nodes (~50k statements):
+
+| statements per `batch()` | round-trips | full sync |
+|---|---|---|
+| 500 | 100 | 68–76s |
+| 1000 | 50 | 55s |
+| **2500** | **20** | **29s** |
+| 5000 | 10 | 31s |
+
+Returns flatten past ~2500, so that is the setting: as fast as 5000, with half the time spent inside any single `batch()` call and correspondingly more headroom under D1's 30s-per-call cap.
+
+### The first sync after a deploy tends to fail
+
+Observed 4 times out of 4 on this Worker: the first `sync_now` issued right after `wrangler deploy` runs past the MCP client's 5-minute timeout, while every later call completes in ~30s — same code, same batch size. `last_sync_phases` shows why: after the most recent failure it still held the *previous* run's marks, meaning the new run died before even its first mark, which is written immediately after `GET /nodes-export` returns. The write loop was never reached.
+
+So this is not about batch width or database work; it is the export call failing to return on a cold-started isolate. It is self-correcting — the lock's 15-minute lease expires, the mirror is never left inconsistent (nothing had been written yet), and a retry succeeds — but it is worth knowing before concluding that a deploy broke syncing. Wait for the lock to clear and try again before investigating.
+
+### Reading the timings
+
+Timings come from `last_sync_phases` in `sync_meta`, written as each phase completes rather than accumulated and stored at the end — a sync killed by the Worker's wall-clock limit never reaches its return statement, so anything buffered until then is lost. Read it with:
+
+```bash
+npx wrangler d1 execute workflowy-mirror --remote \
+  --command "SELECT value FROM sync_meta WHERE key='last_sync_phases'"
+```
+
+The local `test/*-bench.test.ts` probes remain useful for comparing *what statements do* (they are how the FTS delete was found), but not for anything latency-bound. They are excluded from `npm test`; run one with `BENCH=1 npx vitest run test/sync-bench.test.ts --disable-console-intercept`.
 
 Only one sync may run at a time, enforced by a leased lock in `sync_meta` claimed via a single conditional write (a `SELECT`-then-`INSERT` pair could interleave). The 60-second debounce cannot do this on its own: a full sync takes longer than that window, so a caller arriving mid-sync would sail straight past it. Overlapping callers get `skippedReason: "already_running"` without spending the export budget.
 

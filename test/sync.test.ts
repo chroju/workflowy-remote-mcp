@@ -99,6 +99,43 @@ describe("fullSync", () => {
 		expect(row?.name).toBe("after");
 	});
 
+	it("drops vanished ids from the search index too", async () => {
+		// nodes_fts is rebuilt from the export rather than pruned per id, so a
+		// vanished node must not survive in the index and keep matching searches.
+		await fullSync(env.DB, "key", source([node(A), node(B)]).fetch);
+		await env.DB.prepare("DELETE FROM sync_meta WHERE key = 'last_sync_attempt_at'").run();
+
+		await fullSync(env.DB, "key", source([node(A)]).fetch);
+
+		expect(await ftsIds()).toEqual([A]);
+	});
+
+	it("rebuilds the index without per-id deletes", async () => {
+		// The per-id DELETE this replaced is a full table scan on contentless
+		// fts5 (id is UNINDEXED), which dominated sync time at ~25k nodes.
+		await fullSync(env.DB, "key", source([node(A), node(B)]).fetch);
+		await env.DB.prepare("DELETE FROM sync_meta WHERE key = 'last_sync_attempt_at'").run();
+
+		const seen: string[] = [];
+		const spy = new Proxy(env.DB, {
+			get(target, prop, receiver) {
+				if (prop === "prepare") {
+					return (sql: string) => {
+						seen.push(sql);
+						return (target as D1Database).prepare(sql);
+					};
+				}
+				const value = Reflect.get(target, prop, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}) as D1Database;
+
+		await fullSync(spy, "key", source([node(A), node(B)]).fetch);
+
+		expect(seen).toContain("DELETE FROM nodes_fts");
+		expect(seen).not.toContain("DELETE FROM nodes_fts WHERE id = ?");
+	});
+
 	it("removes rows that vanished upstream", async () => {
 		await fullSync(env.DB, "key", source([node(A), node(B), node(C)]).fetch);
 		await env.DB.prepare("DELETE FROM sync_meta WHERE key = 'last_sync_attempt_at'").run();

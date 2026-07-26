@@ -17,4 +17,12 @@ export default defineConfig({
 			},
 		}),
 	],
+	test: {
+		// *-bench are throughput probes, not assertions: they write ~25k rows and
+		// take minutes, so they stay out of `npm test` and CI. Opt in with
+		// `BENCH=1 npx vitest run test/<name>-bench.test.ts`.
+		exclude: process.env.BENCH
+			? ["**/node_modules/**"]
+			: ["**/node_modules/**", "**/*-bench.test.ts"],
+	},
 });
