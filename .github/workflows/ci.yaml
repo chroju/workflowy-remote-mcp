@@ -14,7 +14,7 @@ jobs:
     name: Type check and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
 
       # No resource ids passed: `wrangler types` only reads the binding
       # shapes, so the example's placeholders are enough to type-check and
