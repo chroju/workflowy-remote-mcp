@@ -24,3 +24,8 @@ jobs:
       - run: npm run type-check
 
       - run: npm test
+
+      # A malformed renovate.json5 is silently ignored by the bot, which would
+      # quietly drop the cooldown and pinning policy.
+      - name: Validate the Renovate config
+        run: npx --yes --package renovate renovate-config-validator renovate.json5
