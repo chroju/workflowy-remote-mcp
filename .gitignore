@@ -11,3 +11,6 @@ worker-configuration.d.ts
 
 # Local design notes
 workflowy-mcp-prompt.md
+
+# Local development container setup
+.devcontainer/
