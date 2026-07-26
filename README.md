@@ -295,6 +295,5 @@ Write tools upsert the affected node into D1 on success, but sibling ordering (e
 
 ## Future extensions (out of scope)
 
-- Nightly Markdown export from the D1 mirror to a GitHub repository (knowledge vault)
 - Incremental sync (full refresh is sufficient for now)
 - Privacy filter (excluding specific subtrees). All read queries go through the shared functions in `src/queries.ts`, so a filter can be added in one place
