@@ -112,6 +112,37 @@ If `ALLOWED_GITHUB_USERS` is unset, all authorization attempts are rejected (fai
 npm run deploy
 ```
 
+Or set up GitHub Actions and let pushes to `main` deploy for you — see [Continuous deployment](#continuous-deployment).
+
+## Continuous deployment
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yaml` | pull requests, pushes to `main` | `type-check` + `test` |
+| `deploy.yaml` | pushes to `main`, manual dispatch | `type-check` + `test`, then `wrangler deploy` |
+| `migrate-d1.yaml` | manual dispatch only | Applies `schema.sql` to the remote D1 database |
+
+`deploy.yaml` re-runs the checks itself rather than depending on the CI run, so a manual dispatch cannot skip them.
+
+### Repository secrets
+
+Set these under Settings → Secrets and variables → Actions. The two id secrets exist because `wrangler.jsonc` is gitignored — it holds account-specific resource ids, so CI rebuilds it from `wrangler.jsonc.example` with the ids substituted in. Changes to bindings, crons or migrations therefore stay reviewable in the example file rather than hidden in a secret.
+
+| Secret | Where to find it |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → My Profile → API Tokens, using the **Edit Cloudflare Workers** template |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → Workers & Pages, right-hand sidebar |
+| `CF_KV_ID` | `id` of the `OAUTH_KV` namespace in your local `wrangler.jsonc` |
+| `CF_D1_DATABASE_ID` | `database_id` of the `DB` binding in your local `wrangler.jsonc` |
+
+`deploy.yaml` and `migrate-d1.yaml` both target a `production` environment, so you can require a reviewer for deploys under Settings → Environments.
+
+The five Worker secrets from [Set secrets](#3-set-secrets) are **not** managed by these workflows. `wrangler deploy` leaves existing secrets alone, so set them once with `wrangler secret put` and they persist across deploys.
+
+### D1 migrations are deliberately manual
+
+`schema.sql` opens with `DROP TABLE`, so applying it wipes the mirror. That is recoverable — the next `sync_now` or scheduled run rebuilds it from Workflowy — but it should never happen as a side effect of a deploy. `migrate-d1.yaml` is dispatch-only and requires typing `DROP AND RECREATE` to confirm.
+
 ## Adding the connector to claude.ai
 
 1. claude.ai → Settings → Connectors → **Add custom connector**

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Type check and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # No resource ids passed: `wrangler types` only reads the binding
+      # shapes, so the example's placeholders are enough to type-check and
+      # test against.
+      - uses: ./.github/actions/setup
+
+      - run: npm run type-check
+
+      - run: npm test

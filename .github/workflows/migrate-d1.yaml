@@ -1,0 +1,42 @@
+name: Migrate D1 (destructive)
+
+# schema.sql opens with DROP TABLE, so applying it discards the whole mirror.
+# That is recoverable -- the next sync_now or scheduled run rebuilds it from
+# Workflowy -- but it is never something to do as a side effect of a deploy.
+# Hence: manual dispatch only, behind a typed confirmation.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "DROP AND RECREATE" to confirm the mirror will be wiped'
+        required: true
+        type: string
+
+concurrency:
+  group: migrate-d1
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply schema.sql to the remote D1 database
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'DROP AND RECREATE'
+        run: |
+          echo "::error::Confirmation did not match. Nothing was changed." >&2
+          exit 1
+
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup
+        with:
+          kv-id: ${{ secrets.CF_KV_ID }}
+          d1-database-id: ${{ secrets.CF_D1_DATABASE_ID }}
+          require-ids: "true"
+
+      - run: npm run db:migrate:remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
