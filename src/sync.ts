@@ -6,13 +6,13 @@ const MIN_RETRY_INTERVAL_SECONDS = 60;
 /**
  * Statements per `db.batch()` round-trip.
  *
- * Measured at 24.8k nodes, batch width barely matters: 100 through 5000 all
- * land within 3% of each other, because the work is dominated by what the
- * statements do rather than by the number of round-trips. So this stays
- * moderate -- large enough to keep trips down, small enough to stay well under
- * D1's 30s-per-batch-call cap on a slow day.
+ * Sized for the deployed environment, where each batch() is a network call
+ * from the Worker to D1 and that latency dominates: at 24.8k nodes the write
+ * phase is ~96% of sync time. Local miniflare says width is irrelevant, but
+ * its D1 is in-process and has no round-trip to amortise -- do not tune this
+ * against local numbers.
  */
-const BATCH_SIZE = 500;
+const DEFAULT_BATCH_SIZE = 1000;
 
 /**
  * How long a sync may hold the lock before another attempt may steal it.
@@ -98,6 +98,7 @@ export async function fullSync(
 	db: D1Database,
 	apiKey: string,
 	fetchNodes: NodeSource = (key) => new WorkflowyClient(key).exportAllNodes(),
+	batchSize: number = DEFAULT_BATCH_SIZE,
 ): Promise<SyncResult> {
 	const nowSeconds = Math.floor(Date.now() / 1000);
 
@@ -119,7 +120,7 @@ export async function fullSync(
 	}
 
 	try {
-		return await runFullSync(db, apiKey, nowSeconds, fetchNodes);
+		return await runFullSync(db, apiKey, nowSeconds, fetchNodes, batchSize);
 	} finally {
 		await releaseSyncLock(db);
 	}
@@ -130,6 +131,7 @@ async function runFullSync(
 	apiKey: string,
 	nowSeconds: number,
 	fetchNodes: NodeSource,
+	batchSize: number,
 ): Promise<SyncResult> {
 	await setSyncMeta(db, "last_sync_attempt_at", String(nowSeconds));
 
@@ -151,7 +153,7 @@ async function runFullSync(
 		await setSyncMeta(db, "last_sync_status", `error: ${message}`);
 		return { synced: false, lastSyncedAt: await getLastSyncedAt(db), error: message };
 	}
-	await mark(`export(${nodes.length})`);
+	await mark(`export(${nodes.length},batch=${batchSize})`);
 
 	// Deliberately no "DELETE FROM nodes" first. The wipe and the inserts that
 	// follow are separate, non-atomic D1 calls, so a wipe-then-refill leaves
@@ -208,10 +210,10 @@ async function runFullSync(
 	await db.prepare("DELETE FROM nodes_fts").run();
 	await mark("ftsWipe");
 
-	for (let i = 0; i < statements.length; i += BATCH_SIZE) {
-		await db.batch(statements.slice(i, i + BATCH_SIZE));
-		// Every 20th batch, so a killed run shows how far the writes got.
-		if ((i / BATCH_SIZE) % 20 === 19) await mark(`w${i + BATCH_SIZE}`);
+	for (let i = 0; i < statements.length; i += batchSize) {
+		await db.batch(statements.slice(i, i + batchSize));
+		// Periodically, so a killed run shows how far the writes got.
+		if ((i / batchSize) % 10 === 9) await mark(`w${i + batchSize}`);
 	}
 	await mark("writes");
 
@@ -247,8 +249,8 @@ async function removeVanishedNodes(db: D1Database, nodes: WorkflowyNode[]): Prom
 	const deleteNode = db.prepare("DELETE FROM nodes WHERE id = ?");
 	const statements = stale.map((id) => deleteNode.bind(id));
 
-	for (let i = 0; i < statements.length; i += BATCH_SIZE) {
-		await db.batch(statements.slice(i, i + BATCH_SIZE));
+	for (let i = 0; i < statements.length; i += DEFAULT_BATCH_SIZE) {
+		await db.batch(statements.slice(i, i + DEFAULT_BATCH_SIZE));
 	}
 	return stale.length;
 }
