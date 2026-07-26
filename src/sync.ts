@@ -6,10 +6,11 @@ const MIN_RETRY_INTERVAL_SECONDS = 60;
 /**
  * Statements per `db.batch()` round-trip.
  *
- * D1 caps bound parameters per *statement* (100; the widest here binds 9) and
- * caps *duration* per batch call at 30s -- it sets no ceiling on statement
- * count. Round-trip latency dominates a full sync, so this is sized to cut
- * those trips while leaving ample headroom under the 30s cap.
+ * Measured at 24.8k nodes, batch width barely matters: 100 through 5000 all
+ * land within 3% of each other, because the work is dominated by what the
+ * statements do rather than by the number of round-trips. So this stays
+ * moderate -- large enough to keep trips down, small enough to stay well under
+ * D1's 30s-per-batch-call cap on a slow day.
  */
 const BATCH_SIZE = 500;
 
@@ -162,9 +163,6 @@ async function runFullSync(
 		   modified_at = excluded.modified_at,
 		   completed_at = excluded.completed_at`,
 	);
-	// nodes_fts is a contentless fts5 table with no unique constraint, so an
-	// upsert is not available: delete the id before reinserting it.
-	const deleteFts = db.prepare("DELETE FROM nodes_fts WHERE id = ?");
 	const insertFts = db.prepare("INSERT INTO nodes_fts (id, name, note) VALUES (?, ?, ?)");
 
 	for (const node of nodes) {
@@ -182,11 +180,21 @@ async function runFullSync(
 				node.completedAt ?? null,
 			),
 		);
-		statements.push(deleteFts.bind(node.id));
 		statements.push(
 			insertFts.bind(node.id, stripHtml(node.name), stripHtml(node.note)),
 		);
 	}
+
+	// Rebuild the search index wholesale rather than clearing each id first.
+	// nodes_fts is contentless fts5 whose `id` column is UNINDEXED, so a
+	// `DELETE ... WHERE id = ?` scans the whole table -- 24.8k of them measured
+	// at ~35s, against ~0.5s for the inserts and ~0.1s for this single wipe.
+	//
+	// Unlike `nodes`, this is safe to empty: it holds no data of its own, only
+	// a derived index. The gap costs search_nodes its hits for the few hundred
+	// milliseconds of the rebuild, while get_node and get_subtree -- which
+	// never touch it -- are unaffected.
+	await db.prepare("DELETE FROM nodes_fts").run();
 
 	for (let i = 0; i < statements.length; i += BATCH_SIZE) {
 		await db.batch(statements.slice(i, i + BATCH_SIZE));
@@ -209,6 +217,10 @@ async function runFullSync(
  * mirror at a moment when it still exists upstream. The id set is compared in
  * memory because D1 has no temp tables and a bound IN-list of ~25k ids would
  * blow past the statement's variable limit.
+ *
+ * Only `nodes` needs this. nodes_fts was rebuilt from the export a moment ago,
+ * so a vanished id is already absent from it -- and deleting by id there is a
+ * full table scan, the very cost the rebuild exists to avoid.
  */
 async function removeVanishedNodes(db: D1Database, nodes: WorkflowyNode[]): Promise<number> {
 	const live = new Set(nodes.map((node) => node.id));
@@ -217,8 +229,7 @@ async function removeVanishedNodes(db: D1Database, nodes: WorkflowyNode[]): Prom
 	if (stale.length === 0) return 0;
 
 	const deleteNode = db.prepare("DELETE FROM nodes WHERE id = ?");
-	const deleteFts = db.prepare("DELETE FROM nodes_fts WHERE id = ?");
-	const statements = stale.flatMap((id) => [deleteNode.bind(id), deleteFts.bind(id)]);
+	const statements = stale.map((id) => deleteNode.bind(id));
 
 	for (let i = 0; i < statements.length; i += BATCH_SIZE) {
 		await db.batch(statements.slice(i, i + BATCH_SIZE));
