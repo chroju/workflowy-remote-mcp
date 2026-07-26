@@ -133,6 +133,16 @@ async function runFullSync(
 ): Promise<SyncResult> {
 	await setSyncMeta(db, "last_sync_attempt_at", String(nowSeconds));
 
+	// Phase timings are written as they complete, not at the end: a sync killed
+	// by the Worker's wall-clock limit never reaches its own return statement,
+	// so without this the only evidence left is that nothing happened.
+	const started = Date.now();
+	const phases: string[] = [];
+	const mark = async (label: string) => {
+		phases.push(`${label}=${Date.now() - started}ms`);
+		await setSyncMeta(db, "last_sync_phases", phases.join(" "));
+	};
+
 	let nodes: WorkflowyNode[];
 	try {
 		nodes = await fetchNodes(apiKey);
@@ -141,6 +151,7 @@ async function runFullSync(
 		await setSyncMeta(db, "last_sync_status", `error: ${message}`);
 		return { synced: false, lastSyncedAt: await getLastSyncedAt(db), error: message };
 	}
+	await mark(`export(${nodes.length})`);
 
 	// Deliberately no "DELETE FROM nodes" first. The wipe and the inserts that
 	// follow are separate, non-atomic D1 calls, so a wipe-then-refill leaves
@@ -195,12 +206,17 @@ async function runFullSync(
 	// milliseconds of the rebuild, while get_node and get_subtree -- which
 	// never touch it -- are unaffected.
 	await db.prepare("DELETE FROM nodes_fts").run();
+	await mark("ftsWipe");
 
 	for (let i = 0; i < statements.length; i += BATCH_SIZE) {
 		await db.batch(statements.slice(i, i + BATCH_SIZE));
+		// Every 20th batch, so a killed run shows how far the writes got.
+		if ((i / BATCH_SIZE) % 20 === 19) await mark(`w${i + BATCH_SIZE}`);
 	}
+	await mark("writes");
 
 	const removedCount = await removeVanishedNodes(db, nodes);
+	await mark(`prune(${removedCount})`);
 
 	const syncedAt = Math.floor(Date.now() / 1000);
 	await setSyncMeta(db, "last_synced_at", String(syncedAt));
