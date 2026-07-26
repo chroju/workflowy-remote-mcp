@@ -112,6 +112,52 @@ If `ALLOWED_GITHUB_USERS` is unset, all authorization attempts are rejected (fai
 npm run deploy
 ```
 
+Or set up GitHub Actions and let pushes to `main` deploy for you — see [Continuous deployment](#continuous-deployment).
+
+## Continuous deployment
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yaml` | pull requests, pushes to `main` | `type-check` + `test` |
+| `deploy.yaml` | pushes to `main`, manual dispatch | `type-check` + `test`, then `wrangler deploy` |
+| `migrate-d1.yaml` | manual dispatch only | Applies `schema.sql` to the remote D1 database |
+
+`deploy.yaml` re-runs the checks itself rather than depending on the CI run, so a manual dispatch cannot skip them.
+
+### Repository secrets
+
+Set these under Settings → Secrets and variables → Actions. The two id secrets exist because `wrangler.jsonc` is gitignored — it holds account-specific resource ids, so CI rebuilds it from `wrangler.jsonc.example` with the ids substituted in. Changes to bindings, crons or migrations therefore stay reviewable in the example file rather than hidden in a secret.
+
+| Secret | Where to find it |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → My Profile → API Tokens, using the **Edit Cloudflare Workers** template |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → Workers & Pages, right-hand sidebar |
+| `CF_KV_ID` | `id` of the `OAUTH_KV` namespace in your local `wrangler.jsonc` |
+| `CF_D1_DATABASE_ID` | `database_id` of the `DB` binding in your local `wrangler.jsonc` |
+
+`deploy.yaml` and `migrate-d1.yaml` both target a `production` environment, so you can require a reviewer for deploys under Settings → Environments.
+
+The five Worker secrets from [Set secrets](#3-set-secrets) are **not** managed by these workflows. `wrangler deploy` leaves existing secrets alone, so set them once with `wrangler secret put` and they persist across deploys.
+
+### Dependencies
+
+This is a deployed Worker, not a published package, so every dependency is **pinned exactly** in `package.json` and `package-lock.json` is committed. CI installs with `npm ci`, so a build never silently picks up a different version than the one that was reviewed.
+
+Renovate (`renovate.json5`) keeps them current under the same policy:
+
+- Ordinary updates wait **7 days** after publication (`minimumReleaseAge`). Compromised releases are usually detected and pulled within days, and 7 days also clears npm's 72-hour unpublish window.
+- **Security** updates bypass that wait — a known exposure outweighs the supply-chain risk of a fresh release.
+- Minor and patch updates arrive as one grouped PR; majors get their own.
+- `rangeStrategy: "pin"` keeps pins pinned rather than widening them into ranges.
+
+Renovate is a GitHub App and must be installed on the repository separately; the config file alone does nothing.
+
+`npm audit` currently reports 4 moderate advisories, all reached through `agents` → `@modelcontextprotocol/sdk` → `@hono/node-server`. The advisory is a path traversal in that package's `serve-static` on Windows; this Worker never imports it and does not run on Node, so it is not exposed. `npm audit fix` proposes `agents@0.3.4`, which is older than the pinned `0.17.4` — the advisory range is expressed in a way npm's comparison mishandles, so applying it would be a downgrade.
+
+### D1 migrations are deliberately manual
+
+`schema.sql` opens with `DROP TABLE`, so applying it wipes the mirror. That is recoverable — the next `sync_now` or scheduled run rebuilds it from Workflowy — but it should never happen as a side effect of a deploy. `migrate-d1.yaml` is dispatch-only and requires typing `DROP AND RECREATE` to confirm.
+
 ## Adding the connector to claude.ai
 
 1. claude.ai → Settings → Connectors → **Add custom connector**

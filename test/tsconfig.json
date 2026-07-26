@@ -4,5 +4,8 @@
 		"moduleResolution": "bundler",
 		"types": ["@cloudflare/vitest-pool-workers/types"]
 	},
-	"include": ["./**/*.ts", "../worker-configuration.d.ts"]
+	// src/env.d.ts declares the secrets, which `wrangler types` only emits when
+	// a local .dev.vars happens to exist -- so it must be included explicitly
+	// or this project fails wherever that file is absent, such as CI.
+	"include": ["./**/*.ts", "../worker-configuration.d.ts", "../src/env.d.ts"]
 }

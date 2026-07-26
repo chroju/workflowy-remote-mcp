@@ -1,0 +1,46 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommitTypeAll(chore)",
+  ],
+  timezone: "Asia/Tokyo",
+
+  // This is a deployed Worker, not a published package: versions are pinned
+  // exactly in package.json and Renovate keeps them that way.
+  rangeStrategy: "pin",
+
+  // Compromised releases are usually detected and pulled within days, and
+  // 7 days also clears npm's 72-hour unpublish window.
+  minimumReleaseAge: "7 days",
+  internalChecksFilter: "strict",
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 6am on monday"],
+  },
+
+  packageRules: [
+    {
+      description: "Minor and patch updates travel together; majors get their own PR to be judged on their own merits.",
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "minor and patch updates",
+    },
+    {
+      description: "Action versions are pinned to tags in the workflows; keep them off the npm PR.",
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+    },
+  ],
+
+  // Security fixes bypass the cooldown: the known exposure outweighs the
+  // supply-chain risk of taking a fresh release.
+  vulnerabilityAlerts: {
+    minimumReleaseAge: null,
+    enabled: true,
+    labels: ["security"],
+  },
+
+  osvVulnerabilityAlerts: true,
+}

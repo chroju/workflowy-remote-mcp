@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup
+        with:
+          kv-id: ${{ secrets.CF_KV_ID }}
+          d1-database-id: ${{ secrets.CF_D1_DATABASE_ID }}
+          require-ids: "true"
+
+      # Gate the deploy on the same checks CI runs. They are cheap next to a
+      # bad deploy, and running them here means a manual dispatch cannot skip
+      # them either.
+      - run: npm run type-check
+
+      - run: npm test
+
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

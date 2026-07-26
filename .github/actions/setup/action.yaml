@@ -1,0 +1,75 @@
+name: Set up the project
+description: >-
+  Installs dependencies and materialises the gitignored wrangler.jsonc from the
+  committed example, substituting account-specific resource IDs.
+
+inputs:
+  kv-id:
+    description: KV namespace id. Omit to leave the example's placeholder in place.
+    required: false
+    default: ""
+  d1-database-id:
+    description: D1 database id. Omit to leave the example's placeholder in place.
+    required: false
+    default: ""
+  require-ids:
+    description: >-
+      Set to "true" for jobs that talk to the real account, so a missing secret
+      fails here rather than as a confusing "namespace not found" from wrangler.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+
+    - run: npm ci
+      shell: bash
+
+    # wrangler.jsonc is gitignored because it carries account-specific
+    # resource IDs. Everything else in it matches the committed example, so
+    # the config is rebuilt from that example rather than stored wholesale in
+    # a secret -- that keeps bindings, crons and migrations under review.
+    #
+    # With no ids supplied the placeholders survive, which is all `wrangler
+    # types` needs; only jobs touching the real account require the values.
+    - name: Materialise wrangler.jsonc
+      shell: bash
+      env:
+        KV_ID: ${{ inputs.kv-id }}
+        D1_DATABASE_ID: ${{ inputs.d1-database-id }}
+        REQUIRE_IDS: ${{ inputs.require-ids }}
+      run: |
+        node --input-type=module <<'NODE'
+        import { readFileSync, writeFileSync } from "node:fs";
+
+        const required = process.env.REQUIRE_IDS === "true";
+        let config = readFileSync("wrangler.jsonc.example", "utf8");
+
+        for (const [placeholder, name, value] of [
+          ["<Add-KV-ID>", "CF_KV_ID", process.env.KV_ID],
+          ["<Add-D1-ID>", "CF_D1_DATABASE_ID", process.env.D1_DATABASE_ID],
+        ]) {
+          if (!config.includes(placeholder)) {
+            throw new Error(
+              `wrangler.jsonc.example no longer contains ${placeholder}; update .github/actions/setup to match.`,
+            );
+          }
+          if (value) {
+            config = config.replaceAll(placeholder, value);
+          } else if (required) {
+            throw new Error(`${name} is required for this job but was empty.`);
+          }
+        }
+
+        writeFileSync("wrangler.jsonc", config);
+        NODE
+
+    # worker-configuration.d.ts is generated, not committed, and tsconfig.json
+    # lists it under "types" -- so type-check fails without this.
+    - run: npm run cf-typegen
+      shell: bash
