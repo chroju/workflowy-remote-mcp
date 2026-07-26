@@ -99,7 +99,7 @@ export async function fullSync(db: D1Database, apiKey: string): Promise<SyncResu
 	return { synced: true, nodeCount: nodes.length, lastSyncedAt: syncedAt };
 }
 
-async function getLastSyncedAt(db: D1Database): Promise<number | null> {
+export async function getLastSyncedAt(db: D1Database): Promise<number | null> {
 	const value = await getSyncMeta(db, "last_synced_at");
 	return value ? Number(value) : null;
 }

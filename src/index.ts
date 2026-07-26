@@ -6,7 +6,7 @@ import { stripHtml } from "./markdown";
 import { NodeIdentifierError, NodeNotFoundError, normalizeForApi } from "./node-id";
 import { searchNodes } from "./queries";
 import { ensureFresh, fullSync } from "./sync";
-import { getNode, getSubtree } from "./tools";
+import { getNode, getSubtree, resolveForWrite } from "./tools";
 import {
 	completeNodeSchema,
 	createNodeSchema,
@@ -130,12 +130,17 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_subtree",
 			{
 				description:
-					"指定ノード配下を D1 ミラーから再帰的に組み立て、Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。todo は チェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
+					"指定ノード配下を Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。max_depth=1 の場合は公式APIから直下1階層のみを取得するため常に最新。max_depth>=2 の場合は D1 ミラーを再帰的に辿るため最大1時間程度古いことがあり、末尾にミラーの最終同期時刻を付記する。todo はチェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
 				inputSchema: getSubtreeSchema,
 			},
 			async ({ node_id, max_depth }) => {
 				try {
-					await ensureFresh(db, apiKey);
+					// Only a deep walk reads the mirror; max_depth=1 is answered by
+					// the API alone, so syncing first would spend the 1req/min
+					// export budget for nothing.
+					if (max_depth > 1) {
+						await ensureFresh(db, apiKey);
+					}
 					const markdown = await getSubtree(db, client, node_id, max_depth);
 					return { content: [{ type: "text", text: markdown }] };
 				} catch (err) {
@@ -148,7 +153,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_node",
 			{
 				description:
-					"単一ノードの詳細情報(id, name, note, layoutMode, 各種日時)と直下の子ノード一覧を返す。公式APIへ直行するため事前の sync_now は不要で、URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。",
+					"単一ノードの詳細情報(id, parent_id, name, note, priority, layout_mode, created_at, modified_at, completed_at)と直下の子ノード一覧を返す。ノード・子ノードとも公式APIへ直行するため常に最新で、事前の sync_now は不要。URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。祖先パスが必要な場合は search_nodes を使う。node_id に \"None\"(トップレベル)を渡した場合、node は null になり、children にトップレベルのノードが入る。",
 				inputSchema: getNodeSchema,
 			},
 			async ({ node_id }) => {
@@ -200,7 +205,10 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, name, note }) => {
 				try {
-					const node = await client.updateNode(normalizeForApi(node_id), { name, note });
+					const node = await client.updateNode(await resolveForWrite(db, client, node_id), {
+							name,
+						note,
+					});
 					await upsertNodeFromApi(db, node);
 					await upsertFtsForNode(db, node.id, node.name, node.note);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
@@ -218,7 +226,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.completeNode(normalizeForApi(node_id));
+					const node = await client.completeNode(await resolveForWrite(db, client, node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -235,7 +243,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id }) => {
 				try {
-					const node = await client.uncompleteNode(normalizeForApi(node_id));
+					const node = await client.uncompleteNode(await resolveForWrite(db, client, node_id));
 					await upsertNodeFromApi(db, node);
 					return { content: [{ type: "text", text: JSON.stringify(node, null, 2) }] };
 				} catch (err) {
@@ -252,7 +260,9 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 			async ({ node_id, parent_id, position }) => {
 				try {
-					const node = await client.moveNode(normalizeForApi(node_id), {
+					// node_id lands in the URL path (narrow vocabulary); parent_id is a
+					// body field and accepts shortcut keys, "None" and "inbox" as-is.
+					const node = await client.moveNode(await resolveForWrite(db, client, node_id), {
 						parent_id: normalizeForApi(parent_id),
 						position,
 					});

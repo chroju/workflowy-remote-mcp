@@ -47,22 +47,33 @@ beforeEach(async () => {
 });
 
 describe("resolveNodeId", () => {
-	it("resolves a full UUID from the mirror without calling the API", async () => {
+	it("resolves a full UUID from the mirror when the shortcut is enabled", async () => {
 		await env.DB.prepare("INSERT INTO nodes (id, name) VALUES (?, ?)").bind(UUID, "Mirrored").run();
 		const { client, calls } = fakeClient(() => notFound(UUID));
 
-		const result = await resolveNodeId(env.DB, client, UUID);
+		const result = await resolveNodeId(env.DB, client, UUID, { useMirrorShortcut: true });
 
 		expect(result.id).toBe(UUID);
 		expect(result.node).toBeNull();
 		expect(calls).toEqual([]);
 	});
 
-	it("falls back to the API when a UUID is missing from the mirror", async () => {
+	it("goes to the API for a mirrored UUID when the shortcut is off", async () => {
+		await env.DB.prepare("INSERT INTO nodes (id, name) VALUES (?, ?)").bind(UUID, "Mirrored").run();
 		const fetched = node();
 		const { client, calls } = fakeClient(() => fetched);
 
 		const result = await resolveNodeId(env.DB, client, UUID);
+
+		expect(result.node).toEqual(fetched);
+		expect(calls).toEqual([UUID]);
+	});
+
+	it("falls back to the API when a UUID is missing from the mirror", async () => {
+		const fetched = node();
+		const { client, calls } = fakeClient(() => fetched);
+
+		const result = await resolveNodeId(env.DB, client, UUID, { useMirrorShortcut: true });
 
 		expect(result.id).toBe(UUID);
 		expect(result.node).toEqual(fetched);
