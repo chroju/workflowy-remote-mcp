@@ -118,7 +118,7 @@ export async function renderSubtreeMarkdown(
 
 	if (truncated) {
 		lines.push("");
-		lines.push(`_(打ち切り: ノード数が上限 ${maxNodes} 件を超えたため以降は省略されました)_`);
+		lines.push(`_(Truncated: more than ${maxNodes} nodes; the rest was omitted.)_`);
 	}
 
 	return { markdown: lines.join("\n"), truncated, nodeCount };

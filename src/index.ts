@@ -101,13 +101,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		const apiKey = this.env.WORKFLOWY_API_KEY;
 		const client = new WorkflowyClient(apiKey);
 
-		// --- 読み系ツール ---
+		// --- Read tools ---
 
 		this.server.registerTool(
 			"search_nodes",
 			{
 				description:
-					"Workflowy のアウトライン全体を全文検索する。D1 ミラーから検索し、ヒットしたノードの id・name・note抜粋(先頭200字)・祖先パス(ルートからの name を \" > \" 連結)・最終更新日時を返す。日本語・英語どちらのクエリにも対応。ミラーが古い場合はバックグラウンドで同期を開始するが、その完了は待たずに現在のミラーの内容を返すため、直前の編集が反映されていないことがある。確実に最新を見るには sync_now を実行してから再検索する。",
+					'Full-text search across the whole Workflowy outline. Searches the D1 mirror and returns each hit\'s id, name, note excerpt (first 200 characters), ancestor path (names from the root joined with " > ") and last modified time. Queries in any language are supported. Results come from the mirror rather than the official API, so very recent edits may be missing; run sync_now first to be certain the results are current.',
 				inputSchema: searchNodesSchema,
 			},
 			async ({ query, limit, include_completed }) => {
@@ -132,7 +132,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_subtree",
 			{
 				description:
-					"指定ノード配下を Markdown のネスト箇条書きとしてレンダリングして返す。起点は UUID のほか URL・12桁ショートID・カレンダーターゲットなどでも指定できる。max_depth=1 の場合は公式APIから直下1階層のみを取得するため常に最新。max_depth>=2 の場合は D1 ミラーを再帰的に辿るため古いことがあり、末尾にミラーの最終同期時刻を付記する(ミラーが古ければバックグラウンドで同期を開始するが、完了は待たない)。todo はチェックボックス、見出しは太字、code-block はコードフェンス、quote-block は引用として表現される。ノード数が500件を超える場合は打ち切ってその旨を伝える。",
+					"Render the subtree under a node as a nested Markdown bullet list. The starting point can be given as a UUID, a URL, a 12-character short id, a calendar target, and so on. With max_depth=1 the children come straight from the official API and are always current. With max_depth>=2 the D1 mirror is walked recursively, so the result may be stale; the mirror's last sync time is appended at the end, and sync_now refreshes it. Todos render as checkboxes, headings as bold, code blocks as fenced code, and quote blocks as blockquotes. Output is truncated past 500 nodes, with a note saying so.",
 				inputSchema: getSubtreeSchema,
 			},
 			async ({ node_id, max_depth }) => {
@@ -151,7 +151,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"get_node",
 			{
 				description:
-					"単一ノードの詳細情報(id, parent_id, name, note, priority, layout_mode, created_at, modified_at, completed_at)と直下の子ノード一覧を返す。ノード・子ノードとも公式APIへ直行するため常に最新で、事前の sync_now は不要。URL・12桁ショートID・カレンダーターゲットをそのまま渡せる。祖先パスが必要な場合は search_nodes を使う。node_id に \"None\"(トップレベル)を渡した場合、node は null になり、children にトップレベルのノードが入る。",
+					'Return the details of a single node (id, parent_id, name, note, priority, layout_mode, created_at, modified_at, completed_at) together with its immediate children. Both the node and its children come straight from the official API, so the result is always current and sync_now is not needed beforehand. URLs, 12-character short ids and calendar targets can be passed as-is. Use search_nodes when the ancestor path is needed. Passing "None" (the top level) as node_id returns a null node with the top-level nodes as children.',
 				inputSchema: getNodeSchema,
 			},
 			async ({ node_id }) => {
@@ -168,13 +168,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 		);
 
-		// --- 書き系ツール ---
+		// --- Write tools ---
 
 		this.server.registerTool(
 			"create_node",
 			{
 				description:
-					"新しいノードを作成する。parent_id には UUID・URL・12桁ショートID・カレンダーターゲット・\"inbox\"・\"None\"(ルート) などが使える。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
+					'Create a new node. parent_id accepts a UUID, a URL, a 12-character short id, a calendar target, "inbox" or "None" (the root). Writes go straight to the official API and, on success, are applied to the D1 mirror as well.',
 				inputSchema: createNodeSchema,
 			},
 			async ({ parent_id, name, note, position }) => {
@@ -197,7 +197,8 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"update_node",
 			{
-				description: "既存ノードの name / note を更新する。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
+				description:
+					"Update the name and/or note of an existing node. Writes go straight to the official API and, on success, are applied to the D1 mirror as well.",
 				inputSchema: updateNodeSchema,
 			},
 			async ({ node_id, name, note }) => {
@@ -218,7 +219,8 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"complete_node",
 			{
-				description: "ノードを完了状態にする。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
+				description:
+					"Mark a node as completed. Writes go straight to the official API and, on success, are applied to the D1 mirror as well.",
 				inputSchema: completeNodeSchema,
 			},
 			async ({ node_id }) => {
@@ -235,7 +237,8 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"uncomplete_node",
 			{
-				description: "ノードを未完了状態に戻す。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
+				description:
+					"Return a node to the uncompleted state. Writes go straight to the official API and, on success, are applied to the D1 mirror as well.",
 				inputSchema: uncompleteNodeSchema,
 			},
 			async ({ node_id }) => {
@@ -252,7 +255,8 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 		this.server.registerTool(
 			"move_node",
 			{
-				description: "ノードを別の親の配下、または兄弟内の別位置へ移動する。公式APIへ直行し、成功したら D1 ミラーにも反映する。",
+				description:
+					"Move a node under a different parent, or to a different position among its siblings. Writes go straight to the official API and, on success, are applied to the D1 mirror as well.",
 				inputSchema: moveNodeSchema,
 			},
 			async ({ node_id, parent_id, position }) => {
@@ -271,13 +275,13 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			},
 		);
 
-		// --- 運用系ツール ---
+		// --- Operational tools ---
 
 		this.server.registerTool(
 			"sync_now",
 			{
 				description:
-					"D1 ミラーを Workflowy の現在の状態に全量同期する(fullSync)。直近60秒以内に同期を試みていた場合、および別の同期が実行中の場合はスキップされる。最終同期時刻・同期件数・削除件数を返す。同期中もミラーは読み取り可能な状態を保つ。",
+					"Fully resynchronise the D1 mirror with the current state of Workflowy (fullSync). Skipped if a sync was already attempted within the last 60 seconds, or if another sync is in progress. Returns the last sync time along with the number of nodes synced and deleted. The mirror stays readable throughout the sync.",
 				inputSchema: syncNowSchema,
 			},
 			async () => {

@@ -85,8 +85,8 @@ export async function searchNodes(
 	const completedClause = includeCompleted ? "" : "AND n.completed_at IS NULL";
 
 	// The trigram tokenizer cannot match queries shorter than 3 code points
-	// (e.g. "パン"), so fall back to a LIKE scan over the plain-text FTS
-	// shadow columns for short queries.
+	// (e.g. a two-character CJK word), so fall back to a LIKE scan over the
+	// plain-text FTS shadow columns for short queries.
 	const useLike = [...query].length < 3;
 	const stmt = useLike
 		? db
