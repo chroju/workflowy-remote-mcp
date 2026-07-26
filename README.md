@@ -18,16 +18,17 @@ It is designed as a **single-user** server: authentication decides who may conne
 
 ## Architecture
 
-- **Reads** are served from a D1 mirror with FTS5 full-text search, because the official API has no search endpoint
+- **Reads** go to the official API by default. The D1 mirror serves only what the API cannot answer: full-text search (no search endpoint) and multi-level subtree walks (List returns one level at a time)
 - **Writes** go straight to the official API, then are optimistically reflected into the D1 mirror
-- **Mirror freshness** is maintained by lazy sync on read-tool calls (15-minute threshold) plus a twice-daily cron
+- **Mirror freshness** is maintained by a twice-daily cron plus on-demand `sync_now`. Reads never sync inline — a full sync takes minutes on a large outline, well past an MCP client's timeout
 - **Auth** is OAuth 2.1 via [`workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider), with GitHub as the upstream IdP and an allowlist (`ALLOWED_GITHUB_USERS`) gating authorization
 - The Workflowy API key lives in a Worker secret and is never exposed to clients
 
 ```
 claude.ai ──OAuth 2.1──> Workers (OAuthProvider + McpAgent)
                               │
-                              ├── reads:  D1 mirror (FTS5 trigram)
+                              ├── reads:  Workflowy API, except
+                              │           search + deep subtree: D1 mirror (FTS5 trigram)
                               └── writes: Workflowy API ──on success──> D1 upsert
 ```
 
@@ -207,23 +208,33 @@ Tests run under `@cloudflare/vitest-pool-workers`, so D1 behaves as it does in p
 
 `GET /nodes-export` (full sync) is rate-limited upstream to **1 request/minute**. To respect this, sync attempts are skipped if the previous attempt was less than 60 seconds ago (this also applies to `sync_now`).
 
-### Lazy sync threshold
+### No sync on reads
 
-`search_nodes` and `get_subtree` check `last_synced_at` before running and perform an inline full sync if it is older than **15 minutes**. Within that window they serve straight from D1, so changes made in Workflowy itself may not be visible yet. Call `sync_now` first if you need the latest state.
+Read tools never sync. They used to: `search_nodes` and `get_subtree` ran an inline full sync when `last_synced_at` was older than 15 minutes. On a real outline (~25k nodes) that sync takes minutes — longer than an MCP client will wait — so the read timed out while the sync completed unseen. Deferring it to `waitUntil` would have fixed the timeout but left reads spending the 1 req/min export budget at moments the caller cannot predict.
 
-`get_node` does not sync at all: the node comes from the API (or from the mirror row its UUID already matched) and its children always come from `GET /nodes?parent_id=`, so a stale mirror cannot affect the answer.
+The mirror is refreshed by the twice-daily cron and by `sync_now`. Reads answer from whatever it currently holds, and `get_subtree` states its last sync time so a caller who needs certainty can run `sync_now` first.
 
 ### Reads: which layer answers what
 
-`get_node` is the interactive entry point, so it favours freshness and a low call count: one Retrieve to resolve the identifier, one List for the children.
+`get_node` and `get_subtree` with `max_depth=1` go entirely to the API — one Retrieve to resolve the identifier, one List for the children — and issue **no D1 query at all**.
 
-`get_subtree` resolves only its starting point through the API and then recurses the **mirror**. List returns a single level, so walking a depth-N subtree through the API would cost one HTTP call per node; the mirror recursion is the right shape for that read. When the starting point resolves but has no mirror row — a node created since the last sync — the tool falls back to one level from List and says so in its output rather than returning a silently empty subtree. It never triggers `nodes-export` to paper over the gap.
+`get_subtree` with `max_depth>=2` resolves its starting point through the API and then recurses the **mirror**, appending the mirror's last sync time to its output. List returns a single level, so walking a depth-N subtree through the API would cost one HTTP call per node; the mirror recursion is the right shape for that read. When the starting point resolves but has no mirror row — a node created since the last sync — the tool falls back to one level from List and says so rather than returning a silently empty subtree. It never triggers `nodes-export` to paper over the gap.
+
+All three read tools return the same node shape (`snake_case`, flat `layout_mode`), regardless of which layer answered.
 
 ### Full-text search
 
 The mirror uses the FTS5 **trigram tokenizer** (verified to work on D1 both locally and remotely). It supports substring matching for both Japanese and English, but trigram matching cannot handle queries shorter than 3 code points; those queries automatically fall back to a LIKE scan over the plain-text FTS columns.
 
 The FTS table stores plain text with inline HTML tags stripped from name/note.
+
+### Mirror consistency during sync
+
+A full sync must never leave the mirror unreadable, because D1 gives it no transaction to hide behind: the export is written over several hundred separate `batch()` calls, and reads land between them.
+
+So `fullSync` does **not** wipe the tables first. Rows are upserted in place and only ids missing from the export are deleted afterwards, which keeps every row continuously visible and means a node is never absent from the mirror while it still exists upstream.
+
+Only one sync may run at a time, enforced by a leased lock in `sync_meta` claimed via a single conditional write (a `SELECT`-then-`INSERT` pair could interleave). The 60-second debounce cannot do this on its own: a full sync takes longer than that window, so a caller arriving mid-sync would sail straight past it. Overlapping callers get `skippedReason: "already_running"` without spending the export budget.
 
 ### Mirror consistency after writes
 

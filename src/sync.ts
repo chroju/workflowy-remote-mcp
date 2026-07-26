@@ -2,9 +2,16 @@ import { stripHtml } from "./markdown";
 import type { LayoutMode, WorkflowyNode } from "./workflowy-client";
 import { WorkflowyClient } from "./workflowy-client";
 
-const STALE_AFTER_SECONDS = 15 * 60;
 const MIN_RETRY_INTERVAL_SECONDS = 60;
-const BATCH_SIZE = 100;
+/**
+ * Statements per `db.batch()` round-trip.
+ *
+ * D1 caps bound parameters per *statement* (100; the widest here binds 9) and
+ * caps *duration* per batch call at 30s -- it sets no ceiling on statement
+ * count. Round-trip latency dominates a full sync, so this is sized to cut
+ * those trips while leaving ample headroom under the 30s cap.
+ */
+const BATCH_SIZE = 500;
 
 /**
  * How long a sync may hold the lock before another attempt may steal it.
@@ -71,7 +78,7 @@ async function releaseSyncLock(db: D1Database): Promise<void> {
 
 export interface SyncResult {
 	synced: boolean;
-	skippedReason?: "too_recent" | "attempted_too_recently" | "already_running";
+	skippedReason?: "attempted_too_recently" | "already_running";
 	nodeCount?: number;
 	removedCount?: number;
 	lastSyncedAt: number | null;
@@ -224,21 +231,16 @@ export async function getLastSyncedAt(db: D1Database): Promise<number | null> {
 	return value ? Number(value) : null;
 }
 
-/**
- * Hook called before read tools run: triggers an inline fullSync if the
- * mirror is stale (>15min old), respecting the 60s retry debounce.
+/*
+ * There is deliberately no ensureFresh() here.
+ *
+ * Read tools used to sync inline when the mirror looked stale. On a large
+ * outline that sync takes minutes -- longer than an MCP client will wait -- so
+ * the read timed out while the sync completed unseen. Moving it to waitUntil
+ * would fix the timeout but leaves reads quietly spending the 1req/min export
+ * budget and refreshing at moments the caller cannot predict.
+ *
+ * The mirror is refreshed on a schedule (cron) and on demand (sync_now).
+ * Reads answer from whatever the mirror currently holds; get_subtree states
+ * its last sync time, so a caller who needs certainty can run sync_now first.
  */
-export async function ensureFresh(
-	db: D1Database,
-	apiKey: string,
-	fetchNodes?: NodeSource,
-): Promise<SyncResult> {
-	const lastSyncedAt = await getLastSyncedAt(db);
-	const nowSeconds = Math.floor(Date.now() / 1000);
-
-	if (lastSyncedAt !== null && nowSeconds - lastSyncedAt < STALE_AFTER_SECONDS) {
-		return { synced: false, skippedReason: "too_recent", lastSyncedAt };
-	}
-
-	return fetchNodes ? fullSync(db, apiKey, fetchNodes) : fullSync(db, apiKey);
-}

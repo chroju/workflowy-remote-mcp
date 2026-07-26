@@ -316,6 +316,37 @@ describe("getSubtree", () => {
 	});
 });
 
+describe("read tools never sync", () => {
+	// Reads answer from whatever the mirror holds. Syncing inline made them
+	// wait minutes on a large outline and time out; syncing behind the request
+	// would spend the 1req/min export budget at unpredictable moments. Both are
+	// regressions this guards against, at the seam where they would reappear.
+	it("exposes no ensureFresh to call", async () => {
+		const sync = await import("../src/sync");
+
+		expect(sync).not.toHaveProperty("ensureFresh");
+	});
+
+	it("does not touch sync_meta on a deep get_subtree beyond reading it", async () => {
+		await insert({ id: ROOT_UUID, name: "Root" });
+		await insert({ id: CHILD_UUID, parent_id: ROOT_UUID, name: "Child" });
+		await env.DB.prepare("INSERT INTO sync_meta (key, value) VALUES (?, ?)")
+			.bind("last_synced_at", "1700000000")
+			.run();
+		const { client } = stubClient();
+
+		await getSubtree(env.DB, client, ROOT_UUID, 3);
+
+		// An inline sync would have stamped last_sync_attempt_at and moved
+		// last_synced_at forward.
+		const { results } = await env.DB.prepare("SELECT key, value FROM sync_meta ORDER BY key").all<{
+			key: string;
+			value: string;
+		}>();
+		expect(results).toEqual([{ key: "last_synced_at", value: "1700000000" }]);
+	});
+});
+
 describe("resolveForWrite", () => {
 	it("passes a UUID through without an API call", async () => {
 		const { client, getNodeCalls } = stubClient();
