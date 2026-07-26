@@ -270,6 +270,14 @@ Measured against production at 24.8k nodes (~50k statements):
 
 Returns flatten past ~2500, so that is the setting: as fast as 5000, with half the time spent inside any single `batch()` call and correspondingly more headroom under D1's 30s-per-call cap.
 
+### The first sync after a deploy tends to fail
+
+Observed 4 times out of 4 on this Worker: the first `sync_now` issued right after `wrangler deploy` runs past the MCP client's 5-minute timeout, while every later call completes in ~30s — same code, same batch size. `last_sync_phases` shows why: after the most recent failure it still held the *previous* run's marks, meaning the new run died before even its first mark, which is written immediately after `GET /nodes-export` returns. The write loop was never reached.
+
+So this is not about batch width or database work; it is the export call failing to return on a cold-started isolate. It is self-correcting — the lock's 15-minute lease expires, the mirror is never left inconsistent (nothing had been written yet), and a retry succeeds — but it is worth knowing before concluding that a deploy broke syncing. Wait for the lock to clear and try again before investigating.
+
+### Reading the timings
+
 Timings come from `last_sync_phases` in `sync_meta`, written as each phase completes rather than accumulated and stored at the end — a sync killed by the Worker's wall-clock limit never reaches its return statement, so anything buffered until then is lost. Read it with:
 
 ```bash
