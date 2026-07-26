@@ -280,7 +280,7 @@ export class WorkflowyMCP extends McpAgent<Env, Record<string, never>, Props> {
 			"sync_now",
 			{
 				description:
-					"D1 ミラーを Workflowy の現在の状態に強制的に全量同期する(fullSync)。直近60秒以内に同期を試みていた場合はスキップされる。最終同期時刻と同期件数を返す。",
+					"D1 ミラーを Workflowy の現在の状態に全量同期する(fullSync)。直近60秒以内に同期を試みていた場合、および別の同期が実行中の場合はスキップされる。最終同期時刻・同期件数・削除件数を返す。同期中もミラーは読み取り可能な状態を保つ。",
 				inputSchema: syncNowSchema,
 			},
 			async () => {
