@@ -29,6 +29,9 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 --   sync_lock_until      unix seconds the running sync's lease expires;
 --                        '0' once released. Claimed by a single conditional
 --                        write so only one sync runs at a time.
+--   last_sync_phases     per-phase timings of the last sync, written as each
+--                        phase ends so a sync killed mid-flight still says
+--                        how far it got
 CREATE TABLE sync_meta (
   key TEXT PRIMARY KEY,
   value TEXT

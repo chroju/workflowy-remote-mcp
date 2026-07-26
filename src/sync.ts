@@ -6,13 +6,18 @@ const MIN_RETRY_INTERVAL_SECONDS = 60;
 /**
  * Statements per `db.batch()` round-trip.
  *
- * Sized for the deployed environment, where each batch() is a network call
- * from the Worker to D1 and that latency dominates: at 24.8k nodes the write
- * phase is ~96% of sync time. Local miniflare says width is irrelevant, but
- * its D1 is in-process and has no round-trip to amortise -- do not tune this
- * against local numbers.
+ * Tune this against the deployed Worker, never against local miniflare: its
+ * D1 is in-process, so there is no round-trip to amortise and every width
+ * looks equivalent. Deployed, each batch() is a network call and the write
+ * phase is ~96% of sync time. Measured at 24.8k nodes (~50k statements):
+ *
+ *   500 -> 68-76s    1000 -> 55s    2500 -> 29s    5000 -> 31s
+ *
+ * Returns flatten past ~2500, so this takes the knee rather than the largest
+ * width: same speed as 5000, half the time inside any single batch() call,
+ * and correspondingly more headroom under D1's 30s-per-call cap.
  */
-const DEFAULT_BATCH_SIZE = 5000;
+const DEFAULT_BATCH_SIZE = 2500;
 
 /**
  * How long a sync may hold the lock before another attempt may steal it.
@@ -135,9 +140,14 @@ async function runFullSync(
 ): Promise<SyncResult> {
 	await setSyncMeta(db, "last_sync_attempt_at", String(nowSeconds));
 
-	// Phase timings are written as they complete, not at the end: a sync killed
-	// by the Worker's wall-clock limit never reaches its own return statement,
-	// so without this the only evidence left is that nothing happened.
+	// Phase timings are written as each phase ends, not collected and stored at
+	// the end: a sync killed by the Worker's wall-clock limit never reaches its
+	// own return statement, and without this the only trace left is that
+	// last_synced_at did not move. Reading last_sync_phases after a failure is
+	// what identified the write loop as the cost and, later, showed that a
+	// 5-minute failure was running a different batch size than the one just
+	// deployed. Marks sit on phase boundaries only -- one inside the write loop
+	// would add a D1 write per iteration to the very thing being measured.
 	const started = Date.now();
 	const phases: string[] = [];
 	const mark = async (label: string) => {
@@ -212,8 +222,6 @@ async function runFullSync(
 
 	for (let i = 0; i < statements.length; i += batchSize) {
 		await db.batch(statements.slice(i, i + batchSize));
-		// Periodically, so a killed run shows how far the writes got.
-		if ((i / batchSize) % 10 === 9) await mark(`w${i + batchSize}`);
 	}
 	await mark("writes");
 
