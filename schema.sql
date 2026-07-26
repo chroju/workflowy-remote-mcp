@@ -22,6 +22,13 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
   tokenize='trigram'
 );
 
+-- Sync bookkeeping. Keys in use:
+--   last_synced_at       unix seconds of the last successful sync
+--   last_sync_attempt_at unix seconds of the last attempt (60s debounce)
+--   last_sync_status     "ok" or "error: <message>"
+--   sync_lock_until      unix seconds the running sync's lease expires;
+--                        '0' once released. Claimed by a single conditional
+--                        write so only one sync runs at a time.
 CREATE TABLE sync_meta (
   key TEXT PRIMARY KEY,
   value TEXT

@@ -10,9 +10,12 @@ import { WorkflowyApiError, type WorkflowyNode } from "./workflowy-client";
  * Rather than reimplement that vocabulary against the mirror, everything the
  * mirror cannot answer by itself is delegated to the API.
  *
- * Note the vocabulary is asymmetric upstream: URLs, shortcut keys and "None"
- * are documented for List/Create/Move but not for Retrieve, so URLs are
- * normalised to a short id here before a single-node fetch.
+ * Note the vocabulary is asymmetric upstream. List/Create/Move accept the
+ * whole table; Retrieve -- and so every endpoint taking the identifier as a
+ * `:id` path segment -- accepts only full UUIDs, short ids and calendar
+ * targets. URLs are therefore reduced to a short id here, and the forms the
+ * path cannot take at all (shortcut keys, "None", "inbox") are resolved to a
+ * UUID through the API first. See needsResolutionForPath below.
  */
 
 /** The root of the outline. It has no UUID; children are listed via parent_id=None. */

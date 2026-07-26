@@ -7,7 +7,7 @@ A remote MCP server that wraps the [official Workflowy REST API](https://workflo
 Two gaps drove this project:
 
 1. **Existing Workflowy MCP servers are local (stdio) servers.** They work fine with desktop clients, but claude.ai on the web and mobile can only talk to *remote* MCP servers added as custom connectors — so if you want your outline available from a browser or your phone, a hosted server is the only option.
-2. **You can't search.** The official REST API has no search endpoint, so existing MCP servers built on it can't offer search either. For a large outline, an LLM can't do anything useful without it. This server fills the gap by maintaining a D1 mirror of the whole outline with full-text search (FTS5) and serving all reads from it.
+2. **You can't search.** The official REST API has no search endpoint, so existing MCP servers built on it can't offer search either. For a large outline, an LLM can't do anything useful without it. This server fills the gap by maintaining a D1 mirror of the whole outline with full-text search (FTS5).
 
 A couple of further design choices follow from there:
 
@@ -36,9 +36,9 @@ claude.ai ──OAuth 2.1──> Workers (OAuthProvider + McpAgent)
 
 | Tool | Kind | Description |
 |---|---|---|
-| `search_nodes` | read | Full-text search over name/note, returns ancestor paths |
-| `get_subtree` | read | Renders a node's descendants as nested Markdown (up to 500 nodes) |
-| `get_node` | read | Single node detail plus immediate children |
+| `search_nodes` | read | Full-text search over name/note, returns ancestor paths. Mirror-backed |
+| `get_subtree` | read | Renders a node's descendants as nested Markdown (up to 500 nodes). `max_depth=1` is API-only and always current; deeper walks read the mirror and report its last sync time |
+| `get_node` | read | Single node detail plus immediate children. API-only, always current |
 | `create_node` | write | Create a node |
 | `update_node` | write | Update name / note |
 | `complete_node` / `uncomplete_node` | write | Complete / uncomplete |
@@ -62,10 +62,21 @@ Every `node_id` / `parent_id` accepts the same vocabulary, resolved in
 | Top level of the outline | `None` |
 | User-defined shortcut key | `rd` |
 
-Everything except a UUID already present in the mirror is resolved by the
-official API, which is the authority on this vocabulary. Calendar targets
-resolve existing nodes only — reads never create a date node. A UUID the
-mirror already holds short-circuits with no HTTP call at all.
+Identifiers are resolved by the official API, which is the authority on this
+vocabulary. Calendar targets resolve existing nodes only — reads never create
+a date node.
+
+Two narrower rules apply where the vocabulary is asymmetric upstream:
+
+- A `node_id` addressing a single node (the `:id` path segment of Retrieve,
+  Update, Move, Complete, Uncomplete) accepts only full UUIDs, short ids and
+  calendar targets. URLs are reduced to a short id, and shortcut keys are
+  resolved to a UUID first; `None` is rejected, since the outline root is not
+  a writable node. A `parent_id` takes the whole table above as-is.
+- `get_subtree` with `max_depth>=2` reads the mirror anyway, so a UUID the
+  mirror already holds short-circuits there with no HTTP call. Every other
+  read resolves through the API, so that what it returns is never a stale
+  mirror row.
 
 ## Setup
 
@@ -206,7 +217,7 @@ Tests run under `@cloudflare/vitest-pool-workers`, so D1 behaves as it does in p
 
 ### Rate limits
 
-`GET /nodes-export` (full sync) is rate-limited upstream to **1 request/minute**. To respect this, sync attempts are skipped if the previous attempt was less than 60 seconds ago (this also applies to `sync_now`).
+`GET /nodes-export` (full sync) is rate-limited upstream to **1 request/minute**. To respect this, a sync is skipped — without touching the endpoint — if the previous attempt was less than 60 seconds ago (`attempted_too_recently`, which also applies to `sync_now`) or if another sync is still running (`already_running`).
 
 ### No sync on reads
 
