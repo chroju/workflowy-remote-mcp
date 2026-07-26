@@ -12,7 +12,7 @@ const MIN_RETRY_INTERVAL_SECONDS = 60;
  * its D1 is in-process and has no round-trip to amortise -- do not tune this
  * against local numbers.
  */
-const DEFAULT_BATCH_SIZE = 2500;
+const DEFAULT_BATCH_SIZE = 5000;
 
 /**
  * How long a sync may hold the lock before another attempt may steal it.
