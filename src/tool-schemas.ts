@@ -6,53 +6,55 @@ import { z } from "zod";
  * across tools.
  */
 const NODE_IDENTIFIER_DESC =
-	'ノード識別子。UUID / 12桁ショートID / Workflowy の URL ("https://workflowy.com/#/xxxxxxxxxxxx") / カレンダーターゲット ("today" / "tomorrow" / "next_week" / "calendar" / "YYYY" / "YYYY-MM" / "YYYY-MM-DD") / "inbox" / "None"(アウトラインのトップレベル) / ユーザー定義のショートカットキー が使える';
+	'node identifier. Accepts a UUID, a 12-character short id, a Workflowy URL ("https://workflowy.com/#/xxxxxxxxxxxx"), a calendar target ("today" / "tomorrow" / "next_week" / "calendar" / "YYYY" / "YYYY-MM" / "YYYY-MM-DD"), "inbox", "None" (the top level of the outline), or a user-defined shortcut key';
 
 export const searchNodesSchema = {
-	query: z.string().describe("検索クエリ文字列。ノードの name/note に対して全文検索する"),
-	limit: z.number().int().min(1).max(100).default(20).describe("返す件数の上限"),
+	query: z.string().describe("Search query. Matched full-text against node name and note."),
+	limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of results."),
 	include_completed: z
 		.boolean()
 		.default(false)
-		.describe("完了済みノードも検索結果に含めるかどうか"),
+		.describe("Whether to include completed nodes in the results."),
 };
 
 export const getSubtreeSchema = {
-	node_id: z.string().describe(`起点となる${NODE_IDENTIFIER_DESC}`),
-	max_depth: z.number().int().min(1).max(20).default(5).describe("再帰的に辿る最大深さ"),
+	node_id: z.string().describe(`Starting ${NODE_IDENTIFIER_DESC}.`),
+	max_depth: z.number().int().min(1).max(20).default(5).describe("Maximum depth to walk."),
 };
 
 export const getNodeSchema = {
-	node_id: z.string().describe(`取得する${NODE_IDENTIFIER_DESC}`),
+	node_id: z.string().describe(`The ${NODE_IDENTIFIER_DESC} to fetch.`),
 };
 
 export const createNodeSchema = {
-	parent_id: z.string().describe(`親となる${NODE_IDENTIFIER_DESC}`),
+	parent_id: z.string().describe(`Parent ${NODE_IDENTIFIER_DESC}.`),
 	name: z
 		.string()
-		.describe("ノード名。Markdown記法(**bold**, - [ ] todo, # 見出し など)がパースされる"),
-	note: z.string().optional().describe("ノートのテキスト"),
-	position: z.enum(["top", "bottom"]).optional().describe("兄弟内での挿入位置"),
+		.describe(
+			"Node name. Markdown syntax (**bold**, - [ ] todo, # heading, and so on) is parsed.",
+		),
+	note: z.string().optional().describe("Note text."),
+	position: z.enum(["top", "bottom"]).optional().describe("Insert position among siblings."),
 };
 
 export const updateNodeSchema = {
-	node_id: z.string().describe(`更新する${NODE_IDENTIFIER_DESC}`),
-	name: z.string().optional().describe("新しいノード名"),
-	note: z.string().optional().describe("新しいノートのテキスト"),
+	node_id: z.string().describe(`The ${NODE_IDENTIFIER_DESC} to update.`),
+	name: z.string().optional().describe("New node name."),
+	note: z.string().optional().describe("New note text."),
 };
 
 export const completeNodeSchema = {
-	node_id: z.string().describe(`完了にする${NODE_IDENTIFIER_DESC}`),
+	node_id: z.string().describe(`The ${NODE_IDENTIFIER_DESC} to complete.`),
 };
 
 export const uncompleteNodeSchema = {
-	node_id: z.string().describe(`未完了に戻す${NODE_IDENTIFIER_DESC}`),
+	node_id: z.string().describe(`The ${NODE_IDENTIFIER_DESC} to uncomplete.`),
 };
 
 export const moveNodeSchema = {
-	node_id: z.string().describe(`移動する${NODE_IDENTIFIER_DESC}`),
-	parent_id: z.string().describe(`移動先の親となる${NODE_IDENTIFIER_DESC}`),
-	position: z.enum(["top", "bottom"]).optional().describe("移動先での挿入位置"),
+	node_id: z.string().describe(`The ${NODE_IDENTIFIER_DESC} to move.`),
+	parent_id: z.string().describe(`Destination parent ${NODE_IDENTIFIER_DESC}.`),
+	position: z.enum(["top", "bottom"]).optional().describe("Insert position at the destination."),
 };
 
 export const syncNowSchema = {};

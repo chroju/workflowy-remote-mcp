@@ -38,7 +38,7 @@ export interface NodeIdentifier {
 /** Raised when the input cannot be interpreted as a node identifier at all. */
 export class NodeIdentifierError extends Error {
 	constructor(public input: string) {
-		super(`識別子の形式が不正です: ${input}`);
+		super(`Malformed node identifier: ${input}`);
 		this.name = "NodeIdentifierError";
 	}
 }
@@ -46,7 +46,7 @@ export class NodeIdentifierError extends Error {
 /** Raised when the identifier is well-formed but resolves to nothing. */
 export class NodeNotFoundError extends Error {
 	constructor(public input: string) {
-		super(`ノードが存在しないか、アクセス権がありません: ${input}`);
+		super(`Node does not exist or is not accessible: ${input}`);
 		this.name = "NodeNotFoundError";
 	}
 }

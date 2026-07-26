@@ -27,13 +27,13 @@ export interface NodeReader extends NodeFetcher {
 }
 
 const UNSYNCED_NOTICE =
-	"_(このノードはミラー未同期のため、直下の1階層のみを公式APIから取得して表示しています。深い階層まで読むには sync_now を実行してください)_";
+	"_(This node is not in the mirror yet, so only its immediate children were fetched from the official API. Run sync_now to read deeper levels.)_";
 
 function formatSyncedAt(lastSyncedAt: number | null): string {
 	if (lastSyncedAt === null) {
-		return "_(ミラー最終同期: 未同期)_";
+		return "_(Mirror last synced: never)_";
 	}
-	return `_(ミラー最終同期: ${new Date(lastSyncedAt * 1000).toISOString()})_`;
+	return `_(Mirror last synced: ${new Date(lastSyncedAt * 1000).toISOString()})_`;
 }
 
 /**
@@ -48,7 +48,7 @@ function subtreeRoot(resolved: ResolvedNode, mirroredRow: NodeRow | null): Rende
 	return {
 		id: ROOT_SENTINEL,
 		parent_id: null,
-		name: "(トップレベル)",
+		name: "(top level)",
 		note: null,
 		priority: 0,
 		layout_mode: "bullets",

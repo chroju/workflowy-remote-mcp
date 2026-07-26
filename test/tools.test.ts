@@ -190,7 +190,7 @@ describe("getNode", () => {
 		const { client } = stubClient();
 
 		await expect(getNode(env.DB, client, SHORT_ID)).rejects.toThrow(
-			"ノードが存在しないか、アクセス権がありません: f06c631642eb",
+			"Node does not exist or is not accessible: f06c631642eb",
 		);
 	});
 });
@@ -251,7 +251,7 @@ describe("getSubtree", () => {
 
 		expect(markdown).toContain("# Brand new");
 		expect(markdown).toContain("- New child");
-		expect(markdown).toContain("1階層のみ");
+		expect(markdown).toContain("only its immediate children");
 		expect(listChildrenCalls).toEqual([UNSYNCED_UUID]);
 	});
 
@@ -279,7 +279,7 @@ describe("getSubtree", () => {
 		expect(getNodeCalls).toEqual([ROOT_UUID]);
 		expect(listChildrenCalls).toEqual([ROOT_UUID]);
 		// No mirror read at all, so no sync-time footer either.
-		expect(markdown).not.toContain("最終同期");
+		expect(markdown).not.toContain("Mirror last synced");
 	});
 
 	it("renders the top level from the API for max_depth=1", async () => {
@@ -302,7 +302,7 @@ describe("getSubtree", () => {
 
 		const markdown = await getSubtree(env.DB, client, ROOT_UUID, 3);
 
-		expect(markdown).toContain("最終同期");
+		expect(markdown).toContain("Mirror last synced");
 		expect(markdown).toContain("2023-11-14T22:13:20.000Z");
 	});
 
@@ -312,7 +312,7 @@ describe("getSubtree", () => {
 
 		const markdown = await getSubtree(env.DB, client, ROOT_UUID, 3);
 
-		expect(markdown).toContain("未同期");
+		expect(markdown).toContain("Mirror last synced: never");
 	});
 });
 
@@ -391,14 +391,14 @@ describe("resolveForWrite", () => {
 	it("refuses the outline root, which is not a writable node", async () => {
 		const { client, getNodeCalls } = stubClient();
 
-		await expect(resolveForWrite(env.DB, client, "None")).rejects.toThrow(/識別子の形式が不正/);
+		await expect(resolveForWrite(env.DB, client, "None")).rejects.toThrow(/Malformed node identifier/);
 		expect(getNodeCalls).toEqual([]);
 	});
 
 	it("rejects structurally impossible input before any API call", async () => {
 		const { client, getNodeCalls } = stubClient();
 
-		await expect(resolveForWrite(env.DB, client, "   ")).rejects.toThrow(/識別子の形式が不正/);
+		await expect(resolveForWrite(env.DB, client, "   ")).rejects.toThrow(/Malformed node identifier/);
 		expect(getNodeCalls).toEqual([]);
 	});
 });

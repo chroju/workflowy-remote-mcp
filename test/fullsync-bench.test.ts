@@ -15,7 +15,7 @@ function nodes(count: number, offset = 0): WorkflowyNode[] {
 	return Array.from({ length: count }, (_, i) => ({
 		id: `${String(i + offset).padStart(8, "0")}-1111-4111-8111-111111111111`,
 		parent_id: null,
-		name: `ノード ${i} <b>bold</b> some searchable text`,
+		name: `Node ${i} <b>bold</b> some searchable text`,
 		note: i % 3 === 0 ? `note body for ${i} with a bit more text to index` : null,
 		priority: i,
 		createdAt: 1700000000,
