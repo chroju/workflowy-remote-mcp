@@ -15,7 +15,7 @@
 	"dependencies": {
 		"@cloudflare/workers-oauth-provider": "0.8.2",
 		"agents": "0.17.4",
-		"hono": "4.12.34",
+		"hono": "4.13.5",
 		"octokit": "5.0.5",
 		"zod": "4.4.3"
 	},
