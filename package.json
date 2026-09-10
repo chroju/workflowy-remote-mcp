@@ -13,17 +13,17 @@
 		"db:migrate:remote": "wrangler d1 execute workflowy-mirror --remote --file=./schema.sql"
 	},
 	"dependencies": {
-		"@cloudflare/workers-oauth-provider": "0.8.2",
-		"agents": "0.17.4",
+		"@cloudflare/workers-oauth-provider": "0.10.3",
+		"agents": "0.22.0",
 		"hono": "4.12.34",
 		"octokit": "5.0.5",
-		"zod": "4.4.3"
+		"zod": "4.5.4"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "0.18.8",
-		"@types/node": "26.1.1",
+		"@cloudflare/vitest-pool-workers": "0.22.0",
+		"@types/node": "26.4.1",
 		"typescript": "6.0.3",
 		"vitest": "4.1.10",
-		"wrangler": "4.114.0"
+		"wrangler": "4.129.0"
 	}
 }
